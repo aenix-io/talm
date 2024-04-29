@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aenix-io/telm/commands"
+	"github.com/aenix-io/talm/pkg/commands"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/common"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/spf13/cobra"
@@ -15,8 +15,8 @@ import (
 
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
-	Use:               "talosctl",
-	Short:             "A CLI for out-of-band management of Kubernetes nodes created by Talos",
+	Use:               "talm",
+	Short:             "Just like Helm, but for Talos",
 	Long:              ``,
 	SilenceErrors:     true,
 	SilenceUsage:      true,

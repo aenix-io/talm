@@ -107,18 +107,15 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 		if err != nil {
 			return err
 		}
-		values, err := chartutil.ReadValuesFile(filepath.Join(chartPath, "values.yaml"))
-		if err != nil {
-			return err
-		}
 
 		// Load user values
+		var values map[string]interface{}
 		for _, filePath := range templateCmdFlags.valueFiles {
 			vals, err := chartutil.ReadValuesFile(filePath)
 			if err != nil {
 				return err
 			}
-			values = chartutil.CoalesceTables(vals, values)
+			values = chartutil.CoalesceTables(vals, chrt.Values)
 		}
 
 		// Load cmd values

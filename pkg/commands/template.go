@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -19,9 +20,11 @@ import (
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/hashicorp/go-multierror"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/strvals"
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/siderolabs/talos/pkg/cli"
@@ -29,8 +32,13 @@ import (
 )
 
 var templateCmdFlags struct {
-	insecure bool
-	values   []string
+	insecure      bool
+	valueFiles    []string // -f/--values
+	stringValues  []string // --set-string
+	values        []string // --set
+	fileValues    []string // --set-file
+	jsonValues    []string // --set-json
+	literalValues []string // --set-literal
 }
 
 var templateCmd = &cobra.Command{
@@ -91,13 +99,20 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 		}
 
 		// Load user values
-		for _, filePath := range templateCmdFlags.values {
-			v, err := chartutil.ReadValuesFile(filePath)
+		for _, filePath := range templateCmdFlags.valueFiles {
+			vals, err := chartutil.ReadValuesFile(filePath)
 			if err != nil {
 				return err
 			}
-			values = chartutil.CoalesceTables(v, values)
+			values = chartutil.CoalesceTables(vals, values)
 		}
+
+		// Load cmd values
+		vals, err := MergeValues()
+		if err != nil {
+			return err
+		}
+		values = chartutil.CoalesceTables(vals, values)
 
 		rootValues := map[string]interface{}{
 			"Values": values,
@@ -121,8 +136,14 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 }
 
 func init() {
-	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.values, "values", "f", nil, "specify values in a YAML file (can specify multiple)")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.insecure, "insecure", "i", false, "template using the insecure (encrypted with no auth) maintenance service")
+	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.valueFiles, "values", "f", []string{}, "specify values in a YAML file (can specify multiple)")
+	templateCmd.Flags().StringArrayVar(&templateCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	templateCmd.Flags().StringArrayVar(&templateCmdFlags.stringValues, "set-string", []string{}, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	templateCmd.Flags().StringArrayVar(&templateCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
+	templateCmd.Flags().StringArrayVar(&templateCmdFlags.jsonValues, "set-json", []string{}, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
+	templateCmd.Flags().StringArrayVar(&templateCmdFlags.literalValues, "set-literal", []string{}, "set a literal STRING value on the command line")
+
 	addCommand(templateCmd)
 }
 
@@ -209,4 +230,92 @@ func extractResourceData(r resource.Resource) (map[string]interface{}, error) {
 	}
 
 	return res, nil
+}
+
+// Imported from Helm
+// https://github.com/helm/helm/blob/c6beb169d26751efd8131a5d65abe75c81a334fb/pkg/cli/values/options.go#L44
+func MergeValues() (map[string]interface{}, error) {
+	opts := templateCmdFlags
+	base := map[string]interface{}{}
+
+	// User specified a values files via -f/--values
+	for _, filePath := range opts.valueFiles {
+		currentMap := map[string]interface{}{}
+
+		bytes, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := yaml.Unmarshal(bytes, &currentMap); err != nil {
+			return nil, errors.Wrapf(err, "failed to parse %s", filePath)
+		}
+		// Merge with the previous map
+		base = mergeMaps(base, currentMap)
+	}
+
+	// User specified a value via --set-json
+	for _, value := range opts.jsonValues {
+		if err := strvals.ParseJSON(value, base); err != nil {
+			return nil, errors.Errorf("failed parsing --set-json data %s", value)
+		}
+	}
+
+	// User specified a value via --set
+	for _, value := range opts.values {
+		if err := strvals.ParseInto(value, base); err != nil {
+			return nil, errors.Wrap(err, "failed parsing --set data")
+		}
+	}
+
+	// User specified a value via --set-string
+	for _, value := range opts.stringValues {
+		if err := strvals.ParseIntoString(value, base); err != nil {
+			return nil, errors.Wrap(err, "failed parsing --set-string data")
+		}
+	}
+
+	// User specified a value via --set-file
+	for _, value := range opts.fileValues {
+		reader := func(rs []rune) (interface{}, error) {
+			bytes, err := os.ReadFile(value)
+			if err != nil {
+				return nil, err
+			}
+			return string(bytes), err
+		}
+		if err := strvals.ParseIntoFile(value, base, reader); err != nil {
+			return nil, errors.Wrap(err, "failed parsing --set-file data")
+		}
+	}
+
+	// User specified a value via --set-literal
+	for _, value := range opts.literalValues {
+		if err := strvals.ParseLiteralInto(value, base); err != nil {
+			return nil, errors.Wrap(err, "failed parsing --set-literal data")
+		}
+	}
+
+	return base, nil
+}
+
+// Imported from Helm
+// https://github.com/helm/helm/blob/c6beb169d26751efd8131a5d65abe75c81a334fb/pkg/cli/values/options.go#L108
+func mergeMaps(a, b map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(a))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		if v, ok := v.(map[string]interface{}); ok {
+			if bv, ok := out[k]; ok {
+				if bv, ok := bv.(map[string]interface{}); ok {
+					out[k] = mergeMaps(bv, v)
+					continue
+				}
+			}
+		}
+		out[k] = v
+	}
+	return out
 }

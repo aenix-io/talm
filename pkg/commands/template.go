@@ -26,9 +26,12 @@ import (
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/strvals"
 
+	"github.com/siderolabs/talos/cmd/talosctl/cmd/mgmt/gen"
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
+	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 )
 
 var templateCmdFlags struct {
@@ -125,11 +128,22 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			return err
 		}
 
-		// Output
+		var configPatch []string
 		for _, v := range out {
-			//fmt.Printf("---\n# Source: %s\n%s\n", k, v)
-			fmt.Printf("%s\n", v)
+			configPatch = append(configPatch, v)
+			//fmt.Printf("%s\n", v)
 		}
+
+		configBundle, err := gen.GenerateConfigBundle(nil, "", "", "", configPatch, []string{}, []string{})
+
+		o, err := configBundle.Serialize(encoder.CommentsDisabled, machine.TypeControlPlane)
+		if err != nil {
+			return err
+		}
+
+		//o, _ := yaml.Marshal(talosconf.ControlPlaneCfg.Machine())
+
+		fmt.Printf("%s\n", o)
 
 		return nil
 	}

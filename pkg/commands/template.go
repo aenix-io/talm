@@ -31,6 +31,8 @@ import (
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 )
 
@@ -42,6 +44,7 @@ var templateCmdFlags struct {
 	fileValues    []string // --set-file
 	jsonValues    []string // --set-json
 	literalValues []string // --set-literal
+	withSecrets   string
 }
 
 var templateCmd = &cobra.Command{
@@ -134,7 +137,20 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			//fmt.Printf("%s\n", v)
 		}
 
-		configBundle, err := gen.GenerateConfigBundle(nil, "", "", "", configPatch, []string{}, []string{})
+		var genOptions []generate.Option //nolint:prealloc
+
+		if templateCmdFlags.withSecrets != "" {
+			var secretsBundle *secrets.Bundle
+
+			secretsBundle, err = secrets.LoadBundle(templateCmdFlags.withSecrets)
+			if err != nil {
+				return fmt.Errorf("failed to load secrets bundle: %w", err)
+			}
+
+			genOptions = append(genOptions, generate.WithSecretsBundle(secretsBundle))
+		}
+
+		configBundle, err := gen.GenerateConfigBundle(genOptions, "", "", "", configPatch, []string{}, []string{})
 
 		o, err := configBundle.Serialize(encoder.CommentsDisabled, machine.TypeControlPlane)
 		if err != nil {
@@ -157,6 +173,7 @@ func init() {
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.jsonValues, "set-json", []string{}, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.literalValues, "set-literal", []string{}, "set a literal STRING value on the command line")
+	templateCmd.Flags().StringVar(&templateCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 
 	addCommand(templateCmd)
 }

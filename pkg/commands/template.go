@@ -45,6 +45,8 @@ var templateCmdFlags struct {
 	jsonValues    []string // --set-json
 	literalValues []string // --set-literal
 	withSecrets   string
+	full          bool
+	root          string
 }
 
 var templateCmd = &cobra.Command{
@@ -92,7 +94,13 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 
 		engine.LookupFunc = newLookupFunction(ctx, c)
 
-		chartPath := args[0]
+		chartPath, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		if templateCmdFlags.root != "" {
+			chartPath = templateCmdFlags.root
+		}
 
 		// Load chart
 		chrt, err := loader.LoadDir(chartPath)
@@ -131,10 +139,10 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			return err
 		}
 
-		var configPatch []string
-		for _, v := range out {
-			configPatch = append(configPatch, v)
-			//fmt.Printf("%s\n", v)
+		requestedTemplate := filepath.Join(chrt.Name(), args[0])
+		configPatch, ok := out[requestedTemplate]
+		if !ok {
+			return fmt.Errorf("template %s not found", args[0])
 		}
 
 		var genOptions []generate.Option //nolint:prealloc
@@ -150,16 +158,18 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			genOptions = append(genOptions, generate.WithSecretsBundle(secretsBundle))
 		}
 
-		configBundle, err := gen.GenerateConfigBundle(genOptions, "", "", "", configPatch, []string{}, []string{})
+		configBundle, err := gen.GenerateConfigBundle(genOptions, "", "", "", []string{configPatch}, []string{}, []string{})
 
-		o, err := configBundle.Serialize(encoder.CommentsDisabled, machine.TypeControlPlane)
+		configFull, err := configBundle.Serialize(encoder.CommentsDisabled, machine.TypeControlPlane)
 		if err != nil {
 			return err
 		}
 
-		//o, _ := yaml.Marshal(talosconf.ControlPlaneCfg.Machine())
-
-		fmt.Printf("%s\n", o)
+		if templateCmdFlags.full {
+			fmt.Println(string(configFull))
+		} else {
+			fmt.Println(string(configPatch))
+		}
 
 		return nil
 	}
@@ -174,6 +184,8 @@ func init() {
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.jsonValues, "set-json", []string{}, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.literalValues, "set-literal", []string{}, "set a literal STRING value on the command line")
 	templateCmd.Flags().StringVar(&templateCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
+	templateCmd.Flags().BoolVarP(&templateCmdFlags.full, "full", "", false, "show full resulting config, not only patch")
+	templateCmd.Flags().StringVar(&templateCmdFlags.root, "root", "", "root directory of the project")
 
 	addCommand(templateCmd)
 }

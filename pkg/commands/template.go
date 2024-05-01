@@ -29,6 +29,7 @@ import (
 	"helm.sh/helm/v3/pkg/strvals"
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
+
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/bundle"
@@ -184,13 +185,24 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 		configBundle, err := bundle.NewBundle(configBundleOpts...)
 		var configOrigin []byte
 		if !templateCmdFlags.full {
-			configOrigin, err = configBundle.Serialize(encoder.CommentsDisabled, machine.TypeControlPlane)
+			configOrigin, err = configBundle.Serialize(encoder.CommentsDisabled, machine.TypeWorker)
 			if err != nil {
 				return err
 			}
 		}
+
 		configBundle.ApplyPatches(patches, true, true)
-		configFull, err := configBundle.Serialize(encoder.CommentsDisabled, machine.TypeControlPlane)
+
+		// Detect machineType by patches
+		machineType := configBundle.ControlPlaneCfg.Machine().Type()
+
+		// Fallback to worker
+		if machineType == machine.TypeUnknown {
+			machineType = machine.TypeWorker
+		}
+
+		// Render config
+		configFull, err := configBundle.Serialize(encoder.CommentsDisabled, machineType)
 		if err != nil {
 			return err
 		}

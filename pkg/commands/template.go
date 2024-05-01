@@ -47,6 +47,7 @@ var templateCmdFlags struct {
 	withSecrets   string
 	full          bool
 	root          string
+	offline       bool
 }
 
 var templateCmd = &cobra.Command{
@@ -65,34 +66,36 @@ var templateCmd = &cobra.Command{
 
 func render(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
-		if err := helpers.FailIfMultiNodes(ctx, "talm template"); err != nil {
-			return err
-		}
-
-		response, err := c.Disks(ctx)
-		if err != nil {
-			if response == nil {
-				return fmt.Errorf("error getting disks: %w", err)
+		if !templateCmdFlags.offline {
+			if err := helpers.FailIfMultiNodes(ctx, "talm template"); err != nil {
+				return err
 			}
 
-			cli.Warning("%s", err)
-		}
-		for _, m := range response.Messages {
-			for _, d := range m.Disks {
-				dj, err := json.Marshal(d)
-				if err != nil {
-					return err
+			response, err := c.Disks(ctx)
+			if err != nil {
+				if response == nil {
+					return fmt.Errorf("error getting disks: %w", err)
 				}
-				var disk map[string]interface{}
-				err = json.Unmarshal(dj, &disk)
-				if err != nil {
-					return err
-				}
-				engine.Disks[d.DeviceName] = disk
-			}
-		}
 
-		engine.LookupFunc = newLookupFunction(ctx, c)
+				cli.Warning("%s", err)
+			}
+			for _, m := range response.Messages {
+				for _, d := range m.Disks {
+					dj, err := json.Marshal(d)
+					if err != nil {
+						return err
+					}
+					var disk map[string]interface{}
+					err = json.Unmarshal(dj, &disk)
+					if err != nil {
+						return err
+					}
+					engine.Disks[d.DeviceName] = disk
+				}
+			}
+
+			engine.LookupFunc = newLookupFunction(ctx, c)
+		}
 
 		chartPath, err := os.Getwd()
 		if err != nil {
@@ -183,6 +186,7 @@ func init() {
 	templateCmd.Flags().StringVar(&templateCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.full, "full", "", false, "show full resulting config, not only patch")
 	templateCmd.Flags().StringVar(&templateCmdFlags.root, "root", "", "root directory of the project")
+	templateCmd.Flags().BoolVarP(&templateCmdFlags.offline, "offline", "", false, "disable gathering information and lookup functions")
 
 	addCommand(templateCmd)
 }

@@ -55,7 +55,7 @@ var templateCmdFlags struct {
 }
 
 var templateCmd = &cobra.Command{
-	Use:   "template",
+	Use:   "template <file ..>",
 	Short: "Render chart templates locally and display the output",
 	Long:  ``,
 	Args:  cobra.MinimumNArgs(1),

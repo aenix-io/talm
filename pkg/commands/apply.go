@@ -33,7 +33,6 @@ var applyCmdFlags struct {
 	talosVersion      string
 	withSecrets       string
 	root              string
-	offline           bool
 	kubernetesVersion string
 	dryRun            bool
 	configTryTimeout  time.Duration
@@ -67,7 +66,7 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 			WithSecrets:       applyCmdFlags.withSecrets,
 			Full:              true,
 			Root:              applyCmdFlags.root,
-			Offline:           applyCmdFlags.offline,
+			Offline:           false,
 			KubernetesVersion: applyCmdFlags.kubernetesVersion,
 			TemplateFiles:     args,
 		}
@@ -151,7 +150,6 @@ func init() {
 	applyCmd.Flags().StringVar(&applyCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
 	applyCmd.Flags().StringVar(&applyCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 	applyCmd.Flags().StringVar(&applyCmdFlags.root, "root", "", "root directory of the project")
-	applyCmd.Flags().BoolVarP(&applyCmdFlags.offline, "offline", "", false, "disable gathering information and lookup functions")
 	applyCmd.Flags().StringVar(&applyCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
 
 	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", false, "check how the config change will be applied in dry-run mode")

@@ -190,6 +190,7 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 					GenOptions:  genOptions,
 				},
 			),
+			bundle.WithVerbose(false),
 		}
 
 		// Load patches

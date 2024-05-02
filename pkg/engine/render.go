@@ -54,7 +54,37 @@ type Options struct {
 
 // Render executes the rendering of templates based on the provided options.
 func Render(ctx context.Context, c *client.Client, opts Options) ([]byte, error) {
-	helmEngine.LookupFunc = newLookupFunction(ctx, c)
+
+	// Gather facts and enable lookup options
+	if !opts.Offline {
+		if err := helpers.FailIfMultiNodes(ctx, "talm template"); err != nil {
+			return nil, err
+		}
+
+		response, err := c.Disks(ctx)
+		if err != nil {
+			if response == nil {
+				return nil, fmt.Errorf("error getting disks: %w", err)
+			}
+		}
+		for _, m := range response.Messages {
+			for _, d := range m.Disks {
+				dj, err := json.Marshal(d)
+				if err != nil {
+					return nil, err
+				}
+				var disk map[string]interface{}
+				err = json.Unmarshal(dj, &disk)
+				if err != nil {
+					return nil, err
+				}
+				helmEngine.Disks[d.DeviceName] = disk
+			}
+		}
+
+		helmEngine.LookupFunc = newLookupFunction(ctx, c)
+	}
+
 	chartPath, err := os.Getwd()
 	if err != nil {
 		return nil, err

@@ -43,6 +43,7 @@ func Execute() error {
 			filepath.Join(constants.ServiceAccountMountPath, constants.TalosconfigFilename),
 		),
 	)
+	rootCmd.PersistentFlags().StringVar(&commands.Config.RootDir, "root", ".", "root directory of the project")
 	rootCmd.PersistentFlags().StringVar(&commands.GlobalArgs.CmdContext, "context", "", "Context to be used in command")
 	rootCmd.PersistentFlags().StringSliceVarP(&commands.GlobalArgs.Nodes, "nodes", "n", []string{}, "target the specified nodes")
 	rootCmd.PersistentFlags().StringSliceVarP(&commands.GlobalArgs.Endpoints, "endpoints", "e", []string{}, "override default endpoints in Talos configuration")
@@ -65,7 +66,6 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&commands.Config.RootDir, "root", ".", "root directory of the project")
 	cobra.OnInitialize(initConfig)
 
 	for _, cmd := range commands.Commands {
@@ -89,9 +89,12 @@ func loadConfig(filename string) error {
 	if err != nil {
 		return fmt.Errorf("error reading configuration file: %w", err)
 	}
+
 	if err := yaml.Unmarshal(data, &commands.Config); err != nil {
 		return fmt.Errorf("error unmarshalling configuration: %w", err)
 	}
-	commands.GlobalArgs.Talosconfig = commands.Config.GlobalOptions.Talosconfig
+	if commands.GlobalArgs.Talosconfig == "" {
+		commands.GlobalArgs.Talosconfig = commands.Config.GlobalOptions.Talosconfig
+	}
 	return nil
 }

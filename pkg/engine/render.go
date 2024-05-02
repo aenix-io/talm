@@ -104,7 +104,7 @@ func Render(ctx context.Context, c *client.Client, opts Options) ([]byte, error)
 	}
 
 	rootValues := map[string]interface{}{
-		"Values": values,
+		"Values": mergeMaps(chrt.Values, values),
 	}
 
 	eng := helmEngine.Engine{}

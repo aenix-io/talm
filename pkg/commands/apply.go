@@ -17,7 +17,6 @@ import (
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
-	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 var applyCmdFlags struct {
@@ -32,7 +31,6 @@ var applyCmdFlags struct {
 	literalValues     []string // --set-literal
 	talosVersion      string
 	withSecrets       string
-	root              string
 	kubernetesVersion string
 	dryRun            bool
 	configTryTimeout  time.Duration
@@ -65,7 +63,7 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 			TalosVersion:      applyCmdFlags.talosVersion,
 			WithSecrets:       applyCmdFlags.withSecrets,
 			Full:              true,
-			Root:              applyCmdFlags.root,
+			Root:              Config.RootDir,
 			Offline:           false,
 			KubernetesVersion: applyCmdFlags.kubernetesVersion,
 			TemplateFiles:     args,
@@ -141,20 +139,20 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 
 func init() {
 	applyCmd.Flags().BoolVarP(&applyCmdFlags.insecure, "insecure", "i", false, "apply using the insecure (encrypted with no auth) maintenance service")
-	applyCmd.Flags().StringSliceVarP(&applyCmdFlags.valueFiles, "values", "f", []string{}, "specify values in a YAML file (can specify multiple)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.stringValues, "set-string", []string{}, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.jsonValues, "set-json", []string{}, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.literalValues, "set-literal", []string{}, "set a literal STRING value on the command line")
-	applyCmd.Flags().StringVar(&applyCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
-	applyCmd.Flags().StringVar(&applyCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
-	applyCmd.Flags().StringVar(&applyCmdFlags.root, "root", "", "root directory of the project")
-	applyCmd.Flags().StringVar(&applyCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
+	applyCmd.Flags().StringSliceVarP(&applyCmdFlags.valueFiles, "values", "f", Config.TemplateOptions.ValueFiles, "specify values in a YAML file (can specify multiple)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.values, "set", Config.TemplateOptions.Values, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.stringValues, "set-string", Config.TemplateOptions.StringValues, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.fileValues, "set-file", Config.TemplateOptions.FileValues, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.jsonValues, "set-json", Config.TemplateOptions.JsonValues, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.literalValues, "set-literal", Config.TemplateOptions.LiteralValues, "set a literal STRING value on the command line")
+	applyCmd.Flags().StringVar(&applyCmdFlags.talosVersion, "talos-version", Config.TemplateOptions.TalosVersion, "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
+	applyCmd.Flags().StringVar(&applyCmdFlags.withSecrets, "with-secrets", Config.TemplateOptions.WithSecrets, "use a secrets file generated using 'gen secrets'")
 
-	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", false, "check how the config change will be applied in dry-run mode")
-	applyCmd.Flags().DurationVar(&applyCmdFlags.configTryTimeout, "timeout", constants.ConfigTryTimeout, "the config will be rolled back after specified timeout (if try mode is selected)")
-	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", nil, "list of server certificate fingeprints to accept (defaults to no check)")
+	applyCmd.Flags().StringVar(&applyCmdFlags.kubernetesVersion, "kubernetes-version", Config.TemplateOptions.KubernetesVersion, "desired kubernetes version to run")
+
+	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", Config.ApplyOptions.DryRun, "check how the config change will be applied in dry-run mode")
+	applyCmd.Flags().DurationVar(&applyCmdFlags.configTryTimeout, "timeout", Config.ApplyOptions.TimeoutDuration, "the config will be rolled back after specified timeout (if try mode is selected)")
+	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", Config.ApplyOptions.CertFingerprints, "list of server certificate fingeprints to accept (defaults to no check)")
 	helpers.AddModeFlags(&applyCmdFlags.Mode, applyCmd)
 	addCommand(applyCmd)
 }

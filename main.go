@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/aenix-io/talm/pkg/commands"
 	"github.com/siderolabs/talos/cmd/talosctl/cmd/common"
@@ -62,7 +65,33 @@ func Execute() error {
 }
 
 func init() {
+	rootCmd.PersistentFlags().StringVar(&commands.Config.RootDir, "root", ".", "root directory of the project")
+	cobra.OnInitialize(initConfig)
+
 	for _, cmd := range commands.Commands {
 		rootCmd.AddCommand(cmd)
 	}
+}
+
+func initConfig() {
+	cmd, _, _ := rootCmd.Find(os.Args[1:])
+	if cmd != nil && cmd.Use != "init" {
+		configFile := filepath.Join(commands.Config.RootDir, "Chart.yaml")
+		if err := loadConfig(configFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func loadConfig(filename string) error {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("error reading configuration file: %w", err)
+	}
+	if err := yaml.Unmarshal(data, &commands.Config); err != nil {
+		return fmt.Errorf("error unmarshalling configuration: %w", err)
+	}
+	commands.GlobalArgs.Talosconfig = commands.Config.GlobalOptions.Talosconfig
+	return nil
 }

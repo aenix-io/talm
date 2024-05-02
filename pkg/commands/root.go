@@ -6,6 +6,7 @@ package commands
 
 import (
 	"context"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -13,12 +14,43 @@ import (
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
 	_ "github.com/siderolabs/talos/pkg/grpc/codec" // register codec
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 var kubernetesFlag bool
 
 // GlobalArgs is the common arguments for the root command.
 var GlobalArgs global.Args
+
+var Config struct {
+	RootDir       string
+	GlobalOptions struct {
+		Talosconfig string `yaml:"talosconfig"`
+	} `yaml:"globalOptions"`
+	TemplateOptions struct {
+		Offline           bool     `yaml:"offline"`
+		ValueFiles        []string `yaml:"valueFiles"`
+		Values            []string `yaml:"values"`
+		StringValues      []string `yaml:"stringValues"`
+		FileValues        []string `yaml:"fileValues"`
+		JsonValues        []string `yaml:"jsonValues"`
+		LiteralValues     []string `yaml:"literalValues"`
+		TalosVersion      string   `yaml:"talosVersion"`
+		WithSecrets       string   `yaml:"withSecrets"`
+		KubernetesVersion string   `yaml:"kubernetesVersion"`
+	} `yaml:"templateOptions"`
+	ApplyOptions struct {
+		DryRun           bool   `yaml:"preserve"`
+		Timeout          string `yaml:"timeout"`
+		TimeoutDuration  time.Duration
+		CertFingerprints []string `yaml:"certFingerprints"`
+	} `yaml:"applyOptions"`
+	UpgradeOptions struct {
+		Preserve bool `yaml:"preserve"`
+		Stage    bool `yaml:"stage"`
+		Force    bool `yaml:"force"`
+	} `yaml:"upgradeOptions"`
+}
 
 const pathAutoCompleteLimit = 500
 
@@ -44,4 +76,19 @@ var Commands []*cobra.Command
 
 func addCommand(cmd *cobra.Command) {
 	Commands = append(Commands, cmd)
+}
+
+func init() {
+	if Config.TemplateOptions.KubernetesVersion == "" {
+		Config.TemplateOptions.KubernetesVersion = constants.DefaultKubernetesVersion
+	}
+	if Config.ApplyOptions.Timeout == "" {
+		Config.ApplyOptions.Timeout = constants.ConfigTryTimeout.String()
+	} else {
+		var err error
+		Config.ApplyOptions.TimeoutDuration, err = time.ParseDuration(Config.ApplyOptions.Timeout)
+		if err != nil {
+			panic(err)
+		}
+	}
 }

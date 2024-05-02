@@ -156,6 +156,7 @@ func init() {
 	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", false, "check how the config change will be applied in dry-run mode")
 	applyCmd.Flags().DurationVar(&applyCmdFlags.configTryTimeout, "timeout", 0, "the config will be rolled back after specified timeout (if try mode is selected)")
 	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", nil, "list of server certificate fingeprints to accept (defaults to no check)")
+	applyCmd.Flags().BoolVar(&applyCmdFlags.force, "force", false, "will overwrite existing files")
 	helpers.AddModeFlags(&applyCmdFlags.Mode, applyCmd)
 
 	applyCmd.PreRunE = func(cmd *cobra.Command, args []string) error {

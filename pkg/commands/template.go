@@ -5,7 +5,6 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/aenix-io/talm/pkg/engine"
+	"github.com/aenix-io/talm/pkg/yamltools"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/hashicorp/go-multierror"
@@ -255,7 +255,7 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 		if templateCmdFlags.full {
 			target = []byte(configPatches[len(configPatches)-1])
 		} else {
-			target, err = diffYAMLs(configOrigin, configFull)
+			target, err = yamltools.DiffYAMLs(configOrigin, configFull)
 			if err != nil {
 				return nil
 			}
@@ -273,8 +273,8 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			}
 
 			dstPaths := make(map[string]*yaml.Node)
-			copyComments(&sourceNode, &targetNode, "", dstPaths)
-			applyComments(&targetNode, "", dstPaths)
+			yamltools.CopyComments(&sourceNode, &targetNode, "", dstPaths)
+			yamltools.ApplyComments(&targetNode, "", dstPaths)
 		}
 		configFinal, err = yaml.Marshal(&targetNode)
 		if err != nil {
@@ -476,188 +476,4 @@ func mergeMaps(a, b map[string]interface{}) map[string]interface{} {
 		out[k] = v
 	}
 	return out
-}
-
-// copyComments updates the comments in dstNode considering the structure of whitespace.
-func copyComments(srcNode, dstNode *yaml.Node, path string, dstPaths map[string]*yaml.Node) {
-	// Save the path of the current node in dstPaths if there are comments.
-	if srcNode.HeadComment != "" || srcNode.LineComment != "" || srcNode.FootComment != "" {
-		dstPaths[path] = srcNode
-	}
-
-	// Recursive traversal for child elements.
-	for i := 0; i < len(srcNode.Content); i++ {
-		newPath := path + "/" + srcNode.Content[i].Value // For nodes with keys.
-		if srcNode.Kind == yaml.SequenceNode {
-			newPath = path + "/" + string(i) // For lists.
-		}
-		copyComments(srcNode.Content[i], dstNode, newPath, dstPaths)
-	}
-}
-
-// applyComments applies the copied comments to the target document.
-func applyComments(dstNode *yaml.Node, path string, dstPaths map[string]*yaml.Node) {
-	if srcNode, ok := dstPaths[path]; ok {
-		dstNode.HeadComment = mergeComments(dstNode.HeadComment, srcNode.HeadComment)
-		dstNode.LineComment = mergeComments(dstNode.LineComment, srcNode.LineComment)
-		dstNode.FootComment = mergeComments(dstNode.FootComment, srcNode.FootComment)
-	}
-
-	// Apply to child elements.
-	for i := 0; i < len(dstNode.Content); i++ {
-		newPath := path + "/" + dstNode.Content[i].Value // For nodes with keys.
-		if dstNode.Kind == yaml.SequenceNode {
-			newPath = path + "/" + string(i) // For lists.
-		}
-		applyComments(dstNode.Content[i], newPath, dstPaths)
-	}
-}
-
-// mergeComments combines old and new comments considering empty lines.
-func mergeComments(oldComment, newComment string) string {
-	if oldComment == "" {
-		return newComment
-	}
-	if newComment == "" {
-		return oldComment
-	}
-	return strings.TrimSpace(oldComment) + "\n\n" + strings.TrimSpace(newComment)
-}
-
-// TODO: comments are not compared, and they should not
-// TODO: lists should contain only missing items
-// ----------------
-// diffYAMLs compares two YAML documents and outputs the differences.
-func diffYAMLs(original, modified []byte) ([]byte, error) {
-	var origNode, modNode yaml.Node
-	if err := yaml.Unmarshal(original, &origNode); err != nil {
-		return nil, err
-	}
-	if err := yaml.Unmarshal(modified, &modNode); err != nil {
-		return nil, err
-	}
-
-	// Ignore HeadComment and FootComment
-	clearComments(&origNode)
-	clearComments(&modNode)
-
-	diff := compareNodes(origNode.Content[0], modNode.Content[0])
-	if diff == nil { // If there are no differences
-		return []byte{}, nil
-	}
-
-	buffer := &bytes.Buffer{}
-	encoder := yaml.NewEncoder(buffer)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(diff); err != nil {
-		return nil, err
-	}
-	encoder.Close()
-
-	return buffer.Bytes(), nil
-}
-
-// Clean up comments in YAML nodes
-func clearComments(node *yaml.Node) {
-	node.HeadComment = ""
-	node.LineComment = ""
-	node.FootComment = ""
-	for _, n := range node.Content {
-		clearComments(n)
-	}
-}
-
-// compareNodes recursively finds differences between two YAML nodes.
-func compareNodes(orig, mod *yaml.Node) *yaml.Node {
-	if orig.Kind != mod.Kind {
-		return mod // Different kinds means definitely changed.
-	}
-
-	switch orig.Kind {
-	case yaml.MappingNode:
-		return compareMappingNodes(orig, mod)
-	case yaml.SequenceNode:
-		return compareSequenceNodes(orig, mod)
-	case yaml.ScalarNode:
-		if orig.Value != mod.Value {
-			return mod // Different scalar values mean changed.
-		}
-	}
-	return nil // No differences found
-}
-
-// compareMappingNodes compares two mapping nodes and returns differences.
-func compareMappingNodes(orig, mod *yaml.Node) *yaml.Node {
-	diff := &yaml.Node{Kind: yaml.MappingNode}
-	origMap := nodeMap(orig)
-	modMap := nodeMap(mod)
-
-	for k, modVal := range modMap {
-		origVal, ok := origMap[k]
-		if !ok {
-			addNodeToDiff(diff, k, modVal)
-		} else {
-			changedNode := compareNodes(origVal, modVal)
-			if changedNode != nil {
-				addNodeToDiff(diff, k, changedNode)
-			}
-		}
-	}
-
-	if len(diff.Content) == 0 {
-		return nil // No differences.
-	}
-	return diff
-}
-
-// compareSequenceNodes compares two sequence nodes and returns differences.
-func compareSequenceNodes(orig, mod *yaml.Node) *yaml.Node {
-	diff := &yaml.Node{Kind: yaml.SequenceNode}
-	origSet := nodeSet(orig)
-	for _, modItem := range mod.Content {
-		if !origSet[modItem.Value] {
-			diff.Content = append(diff.Content, modItem)
-		}
-	}
-
-	if len(diff.Content) == 0 {
-		return nil
-	}
-	return diff
-}
-
-// nodeSet creates a set of values from sequence nodes
-func nodeSet(node *yaml.Node) map[string]bool {
-	result := make(map[string]bool)
-	for _, item := range node.Content {
-		result[item.Value] = true
-	}
-	return result
-}
-
-// addNodeToDiff adds a node to the diff result.
-func addNodeToDiff(diff *yaml.Node, key string, node *yaml.Node) {
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: key}
-	diff.Content = append(diff.Content, keyNode)
-	diff.Content = append(diff.Content, node)
-}
-
-// min returns the smaller of x or y.
-func min(x, y int) int {
-	if x < y {
-		return x
-	}
-	return y
-}
-
-// nodeMap creates a map from a YAML mapping node for easy lookup.
-func nodeMap(node *yaml.Node) map[string]*yaml.Node {
-	result := make(map[string]*yaml.Node)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		keyNode := node.Content[i]
-		if keyNode.Kind == yaml.ScalarNode {
-			result[keyNode.Value] = node.Content[i+1]
-		}
-	}
-	return result
 }

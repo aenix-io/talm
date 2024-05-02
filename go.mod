@@ -11,15 +11,15 @@ require (
 	github.com/gobwas/glob v0.2.3
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/pkg/errors v0.9.1
-	github.com/rivo/tview v0.0.0-20240403142647-a22293bda944
+	github.com/rivo/tview v0.0.0-20240501114654-1f4d5e8f881d
 	github.com/siderolabs/gen v0.4.8
 	github.com/siderolabs/talos v1.7.1
 	github.com/siderolabs/talos/pkg/machinery v1.7.1
 	github.com/spf13/cobra v1.8.0
 	github.com/stretchr/testify v1.9.0
-	golang.org/x/sync v0.6.0
+	golang.org/x/sync v0.7.0
 	google.golang.org/grpc v1.63.2
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.34.0
 	gopkg.in/yaml.v3 v3.0.1
 	helm.sh/helm/v3 v3.14.4
 	k8s.io/apimachinery v0.30.0

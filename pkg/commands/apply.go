@@ -33,6 +33,9 @@ var applyCmdFlags struct {
 	withSecrets       string
 	kubernetesVersion string
 	dryRun            bool
+	preserve          bool
+	stage             bool
+	force             bool
 	configTryTimeout  time.Duration
 }
 
@@ -139,20 +142,49 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 
 func init() {
 	applyCmd.Flags().BoolVarP(&applyCmdFlags.insecure, "insecure", "i", false, "apply using the insecure (encrypted with no auth) maintenance service")
-	applyCmd.Flags().StringSliceVarP(&applyCmdFlags.valueFiles, "values", "f", Config.TemplateOptions.ValueFiles, "specify values in a YAML file (can specify multiple)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.values, "set", Config.TemplateOptions.Values, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.stringValues, "set-string", Config.TemplateOptions.StringValues, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.fileValues, "set-file", Config.TemplateOptions.FileValues, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.jsonValues, "set-json", Config.TemplateOptions.JsonValues, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
-	applyCmd.Flags().StringArrayVar(&applyCmdFlags.literalValues, "set-literal", Config.TemplateOptions.LiteralValues, "set a literal STRING value on the command line")
-	applyCmd.Flags().StringVar(&applyCmdFlags.talosVersion, "talos-version", Config.TemplateOptions.TalosVersion, "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
-	applyCmd.Flags().StringVar(&applyCmdFlags.withSecrets, "with-secrets", Config.TemplateOptions.WithSecrets, "use a secrets file generated using 'gen secrets'")
+	applyCmd.Flags().StringSliceVarP(&applyCmdFlags.valueFiles, "values", "f", nil, "specify values in a YAML file (can specify multiple)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.values, "set", nil, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.stringValues, "set-string", nil, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.fileValues, "set-file", nil, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.jsonValues, "set-json", nil, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
+	applyCmd.Flags().StringArrayVar(&applyCmdFlags.literalValues, "set-literal", nil, "set a literal STRING value on the command line")
+	applyCmd.Flags().StringVar(&applyCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
+	applyCmd.Flags().StringVar(&applyCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 
-	applyCmd.Flags().StringVar(&applyCmdFlags.kubernetesVersion, "kubernetes-version", Config.TemplateOptions.KubernetesVersion, "desired kubernetes version to run")
+	applyCmd.Flags().StringVar(&applyCmdFlags.kubernetesVersion, "kubernetes-version", "", "desired kubernetes version to run")
 
-	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", Config.ApplyOptions.DryRun, "check how the config change will be applied in dry-run mode")
-	applyCmd.Flags().DurationVar(&applyCmdFlags.configTryTimeout, "timeout", Config.ApplyOptions.TimeoutDuration, "the config will be rolled back after specified timeout (if try mode is selected)")
-	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", Config.ApplyOptions.CertFingerprints, "list of server certificate fingeprints to accept (defaults to no check)")
+	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", false, "check how the config change will be applied in dry-run mode")
+	applyCmd.Flags().DurationVar(&applyCmdFlags.configTryTimeout, "timeout", 0, "the config will be rolled back after specified timeout (if try mode is selected)")
+	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", nil, "list of server certificate fingeprints to accept (defaults to no check)")
 	helpers.AddModeFlags(&applyCmdFlags.Mode, applyCmd)
+
+	applyCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		applyCmdFlags.valueFiles = append(Config.TemplateOptions.ValueFiles, applyCmdFlags.valueFiles...)
+		applyCmdFlags.values = append(Config.TemplateOptions.Values, applyCmdFlags.values...)
+		applyCmdFlags.stringValues = append(Config.TemplateOptions.StringValues, applyCmdFlags.stringValues...)
+		applyCmdFlags.fileValues = append(Config.TemplateOptions.FileValues, applyCmdFlags.fileValues...)
+		applyCmdFlags.jsonValues = append(Config.TemplateOptions.JsonValues, applyCmdFlags.jsonValues...)
+		applyCmdFlags.literalValues = append(Config.TemplateOptions.LiteralValues, applyCmdFlags.literalValues...)
+		if !cmd.Flags().Changed("talos-version") {
+			applyCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
+		}
+		if !cmd.Flags().Changed("with-secrets") {
+			applyCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
+		}
+		if !cmd.Flags().Changed("kubernetes-version") {
+			applyCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
+		}
+		if !cmd.Flags().Changed("preserve") {
+			applyCmdFlags.preserve = Config.UpgradeOptions.Preserve
+		}
+		if !cmd.Flags().Changed("stage") {
+			applyCmdFlags.stage = Config.UpgradeOptions.Stage
+		}
+		if !cmd.Flags().Changed("force") {
+			applyCmdFlags.force = Config.UpgradeOptions.Force
+		}
+		return nil
+	}
+
 	addCommand(applyCmd)
 }

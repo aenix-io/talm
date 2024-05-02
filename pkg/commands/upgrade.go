@@ -27,6 +27,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 var upgradeCmdFlags struct {
@@ -206,20 +207,49 @@ func init() {
 		fmt.Sprintf("select the reboot mode during upgrade. Mode %q bypasses kexec. Valid values are: %q.",
 			strings.ToLower(machine.UpgradeRequest_POWERCYCLE.String()),
 			rebootModes))
-	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.preserve, "preserve", "p", Config.UpgradeOptions.Preserve, "preserve data")
-	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.stage, "stage", "", Config.UpgradeOptions.Stage, "stage the upgrade to perform it after a reboot")
-	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.force, "force", "", Config.UpgradeOptions.Force, "force the upgrade (skip checks on etcd health and members, might lead to data loss)")
+	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.preserve, "preserve", "p", false, "preserve data")
+	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.stage, "stage", "", false, "stage the upgrade to perform it after a reboot")
+	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.force, "force", "", false, "force the upgrade (skip checks on etcd health and members, might lead to data loss)")
 	upgradeCmdFlags.addTrackActionFlags(upgradeCmd)
 
 	upgradeCmd.Flags().BoolVarP(&upgradeCmdFlags.insecure, "insecure", "i", false, "apply using the insecure (encrypted with no auth) maintenance service")
-	upgradeCmd.Flags().StringSliceVarP(&upgradeCmdFlags.valueFiles, "values", "f", Config.TemplateOptions.ValueFiles, "specify values in a YAML file (can specify multiple)")
-	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.values, "set", Config.TemplateOptions.Values, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.stringValues, "set-string", Config.TemplateOptions.StringValues, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.fileValues, "set-file", Config.TemplateOptions.FileValues, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
-	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.jsonValues, "set-json", Config.TemplateOptions.JsonValues, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
-	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.literalValues, "set-literal", Config.TemplateOptions.LiteralValues, "set a literal STRING value on the command line")
-	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.talosVersion, "talos-version", Config.TemplateOptions.TalosVersion, "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
-	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.withSecrets, "with-secrets", Config.TemplateOptions.WithSecrets, "use a secrets file generated using 'gen secrets'")
-	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.kubernetesVersion, "kubernetes-version", Config.TemplateOptions.KubernetesVersion, "desired kubernetes version to run")
+	upgradeCmd.Flags().StringSliceVarP(&upgradeCmdFlags.valueFiles, "values", "f", []string{}, "specify values in a YAML file (can specify multiple)")
+	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.stringValues, "set-string", []string{}, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
+	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
+	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.jsonValues, "set-json", []string{}, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
+	upgradeCmd.Flags().StringArrayVar(&upgradeCmdFlags.literalValues, "set-literal", []string{}, "set a literal STRING value on the command line")
+	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
+	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
+	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
+
+	upgradeCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		upgradeCmdFlags.valueFiles = append(Config.TemplateOptions.ValueFiles, upgradeCmdFlags.valueFiles...)
+		upgradeCmdFlags.values = append(Config.TemplateOptions.Values, upgradeCmdFlags.values...)
+		upgradeCmdFlags.stringValues = append(Config.TemplateOptions.StringValues, upgradeCmdFlags.stringValues...)
+		upgradeCmdFlags.fileValues = append(Config.TemplateOptions.FileValues, upgradeCmdFlags.fileValues...)
+		upgradeCmdFlags.jsonValues = append(Config.TemplateOptions.JsonValues, upgradeCmdFlags.jsonValues...)
+		upgradeCmdFlags.literalValues = append(Config.TemplateOptions.LiteralValues, upgradeCmdFlags.literalValues...)
+		if !cmd.Flags().Changed("talos-version") {
+			upgradeCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
+		}
+		if !cmd.Flags().Changed("with-secrets") {
+			upgradeCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
+		}
+		if !cmd.Flags().Changed("kubernetes-version") {
+			upgradeCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
+		}
+		if !cmd.Flags().Changed("preserve") {
+			upgradeCmdFlags.preserve = Config.UpgradeOptions.Preserve
+		}
+		if !cmd.Flags().Changed("stage") {
+			upgradeCmdFlags.stage = Config.UpgradeOptions.Stage
+		}
+		if !cmd.Flags().Changed("force") {
+			upgradeCmdFlags.force = Config.UpgradeOptions.Force
+		}
+		return nil
+	}
+
 	addCommand(upgradeCmd)
 }

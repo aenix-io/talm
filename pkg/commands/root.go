@@ -38,6 +38,7 @@ var Config struct {
 		TalosVersion      string   `yaml:"talosVersion"`
 		WithSecrets       string   `yaml:"withSecrets"`
 		KubernetesVersion string   `yaml:"kubernetesVersion"`
+		Full              bool     `yaml:"full"`
 	} `yaml:"templateOptions"`
 	ApplyOptions struct {
 		DryRun           bool   `yaml:"preserve"`

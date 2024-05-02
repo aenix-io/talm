@@ -32,31 +32,35 @@ import (
 
 	"github.com/siderolabs/talos/pkg/cli"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/bundle"
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"github.com/siderolabs/talos/pkg/machinery/config/encoder"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 var templateCmdFlags struct {
-	insecure      bool
-	valueFiles    []string // -f/--values
-	stringValues  []string // --set-string
-	values        []string // --set
-	fileValues    []string // --set-file
-	jsonValues    []string // --set-json
-	literalValues []string // --set-literal
-	withSecrets   string
-	full          bool
-	root          string
-	offline       bool
+	insecure          bool
+	valueFiles        []string // -f/--values
+	stringValues      []string // --set-string
+	values            []string // --set
+	fileValues        []string // --set-file
+	jsonValues        []string // --set-json
+	literalValues     []string // --set-literal
+	talosVersion      string
+	withSecrets       string
+	full              bool
+	root              string
+	offline           bool
+	kubernetesVersion string
 }
 
 var templateCmd = &cobra.Command{
 	Use:   "template <file ..>",
-	Short: "Render chart templates locally and display the output",
+	Short: "Render templates locally and display the output",
 	Long:  ``,
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -155,6 +159,17 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 
 		var genOptions []generate.Option //nolint:prealloc
 
+		if templateCmdFlags.talosVersion != "" {
+			var versionContract *config.VersionContract
+
+			versionContract, err = config.ParseContractFromVersion(templateCmdFlags.talosVersion)
+			if err != nil {
+				return fmt.Errorf("invalid talos-version: %w", err)
+			}
+
+			genOptions = append(genOptions, generate.WithVersionContract(versionContract))
+		}
+
 		if templateCmdFlags.withSecrets != "" {
 			var secretsBundle *secrets.Bundle
 
@@ -166,23 +181,22 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			genOptions = append(genOptions, generate.WithSecretsBundle(secretsBundle))
 		}
 
-		if err != nil {
-			return err
-		}
-
 		configFinal := []byte(configPatches[len(configPatches)-1])
+
 		configBundleOpts := []bundle.Option{
 			bundle.WithInputOptions(
 				&bundle.InputOptions{
-					ClusterName: "clusterName",
-					Endpoint:    "endpoint",
-					KubeVersion: strings.TrimPrefix("kubernetesVersion", "v"),
+					KubeVersion: strings.TrimPrefix(templateCmdFlags.kubernetesVersion, "v"),
 					GenOptions:  genOptions,
 				},
 			),
 		}
-		patches, err := configpatcher.LoadPatches(configPatches)
 		configBundle, err := bundle.NewBundle(configBundleOpts...)
+		if err != nil {
+			return err
+		}
+
+		// Preserve original config for diff
 		var configOrigin []byte
 		if !templateCmdFlags.full {
 			configOrigin, err = configBundle.Serialize(encoder.CommentsDisabled, machine.TypeWorker)
@@ -191,12 +205,21 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			}
 		}
 
-		configBundle.ApplyPatches(patches, true, true)
+		// Load and apply patches from templates
+		patches, err := configpatcher.LoadPatches(configPatches)
+		if err != nil {
+			return err
+		}
+		err = configBundle.ApplyPatches(patches, true, true)
+		if err != nil {
+			return err
+		}
 
-		// Detect machineType by patches
+		//clusterName := configBundle.ControlPlaneCfg.Cluster().Name()
+		//clusterEndpoint := configBundle.ControlPlaneCfg.Cluster().Endpoint()
+
+		// Gather information from resulted config
 		machineType := configBundle.ControlPlaneCfg.Machine().Type()
-
-		// Fallback to worker
 		if machineType == machine.TypeUnknown {
 			machineType = machine.TypeWorker
 		}
@@ -207,6 +230,7 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 			return err
 		}
 		configPatches = append(configPatches, string(configFull))
+
 		// Copy comments
 		if len(configPatches) > 1 {
 
@@ -254,10 +278,12 @@ func init() {
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.jsonValues, "set-json", []string{}, "set JSON values on the command line (can specify multiple or separate values with commas: key1=jsonval1,key2=jsonval2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.literalValues, "set-literal", []string{}, "set a literal STRING value on the command line")
+	templateCmd.Flags().StringVar(&templateCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
 	templateCmd.Flags().StringVar(&templateCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.full, "full", "", false, "show full resulting config, not only patch")
 	templateCmd.Flags().StringVar(&templateCmdFlags.root, "root", "", "root directory of the project")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.offline, "offline", "", false, "disable gathering information and lookup functions")
+	templateCmd.Flags().StringVar(&templateCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
 
 	addCommand(templateCmd)
 }

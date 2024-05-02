@@ -48,7 +48,6 @@ var templateCmd = &cobra.Command{
 func template(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
 		opts := engine.Options{
-			// Populate the options based on the templateCmdFlags or any other necessary input
 			Insecure:          templateCmdFlags.insecure,
 			ValueFiles:        templateCmdFlags.valueFiles,
 			StringValues:      templateCmdFlags.stringValues,
@@ -62,10 +61,9 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 			Root:              templateCmdFlags.root,
 			Offline:           templateCmdFlags.offline,
 			KubernetesVersion: templateCmdFlags.kubernetesVersion,
-			TemplateFiles:     args, // This is where your 'args' are used to specify the template files to render
+			TemplateFiles:     args,
 		}
 
-		// Call the Render function from the render package
 		result, err := engine.Render(ctx, c, opts)
 		if err != nil {
 			return fmt.Errorf("failed to render templates: %w", err)

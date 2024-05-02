@@ -191,22 +191,15 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 				},
 			),
 		}
-		configBundle, err := bundle.NewBundle(configBundleOpts...)
+
+		// Load patches
+		patches, err := configpatcher.LoadPatches(configPatches)
 		if err != nil {
 			return err
 		}
 
-		// Preserve original config for diff
-		var configOrigin []byte
-		if !templateCmdFlags.full {
-			configOrigin, err = configBundle.Serialize(encoder.CommentsDisabled, machine.TypeWorker)
-			if err != nil {
-				return err
-			}
-		}
-
-		// Load and apply patches from templates
-		patches, err := configpatcher.LoadPatches(configPatches)
+		// Load config and apply patches to it to discover machineType
+		configBundle, err := bundle.NewBundle(configBundleOpts...)
 		if err != nil {
 			return err
 		}
@@ -214,14 +207,39 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 		if err != nil {
 			return err
 		}
-
-		//clusterName := configBundle.ControlPlaneCfg.Cluster().Name()
-		//clusterEndpoint := configBundle.ControlPlaneCfg.Cluster().Endpoint()
-
-		// Gather information from resulted config
 		machineType := configBundle.ControlPlaneCfg.Machine().Type()
 		if machineType == machine.TypeUnknown {
 			machineType = machine.TypeWorker
+		}
+
+		// Reload config with correct machineType and apply patches to it
+		configBundle, err = bundle.NewBundle(configBundleOpts...)
+		if err != nil {
+			return err
+		}
+		var configOrigin []byte
+		if !templateCmdFlags.full {
+			configOrigin, err = configBundle.Serialize(encoder.CommentsDisabled, machineType)
+			if err != nil {
+				return err
+			}
+
+			// Overwrite machine.type to preserve this field for diff
+			var config map[string]interface{}
+			if err := yaml.Unmarshal(configOrigin, &config); err != nil {
+				return err
+			}
+			if machine, ok := config["machine"].(map[string]interface{}); ok {
+				machine["type"] = "unknown"
+			}
+			configOrigin, err = yaml.Marshal(&config)
+			if err != nil {
+				return err
+			}
+		}
+		err = configBundle.ApplyPatches(patches, true, true)
+		if err != nil {
+			return err
 		}
 
 		// Render config
@@ -231,37 +249,35 @@ func render(args []string) func(ctx context.Context, c *client.Client) error {
 		}
 		configPatches = append(configPatches, string(configFull))
 
-		// Copy comments
-		if len(configPatches) > 1 {
-
-			var target []byte
-			if templateCmdFlags.full {
-				target = []byte(configPatches[len(configPatches)-1])
-			} else {
-				target, err = diffYAMLs(configOrigin, configFull)
-				if err != nil {
-					return nil
-				}
-			}
-			var targetNode yaml.Node
-			if err := yaml.Unmarshal(target, &targetNode); err != nil {
-				return err
-			}
-
-			for _, configPatch := range configPatches[:len(configPatches)-1] {
-				var sourceNode yaml.Node
-				if err := yaml.Unmarshal([]byte(configPatch), &sourceNode); err != nil {
-					return err
-				}
-
-				dstPaths := make(map[string]*yaml.Node)
-				copyComments(&sourceNode, &targetNode, "", dstPaths)
-				applyComments(&targetNode, "", dstPaths)
-			}
-			configFinal, err = yaml.Marshal(&targetNode)
+		// Calculate diff patch
+		var target []byte
+		if templateCmdFlags.full {
+			target = []byte(configPatches[len(configPatches)-1])
+		} else {
+			target, err = diffYAMLs(configOrigin, configFull)
 			if err != nil {
+				return nil
+			}
+		}
+
+		// Copy comments
+		var targetNode yaml.Node
+		if err := yaml.Unmarshal(target, &targetNode); err != nil {
+			return err
+		}
+		for _, configPatch := range configPatches[:len(configPatches)-1] {
+			var sourceNode yaml.Node
+			if err := yaml.Unmarshal([]byte(configPatch), &sourceNode); err != nil {
 				return err
 			}
+
+			dstPaths := make(map[string]*yaml.Node)
+			copyComments(&sourceNode, &targetNode, "", dstPaths)
+			applyComments(&targetNode, "", dstPaths)
+		}
+		configFinal, err = yaml.Marshal(&targetNode)
+		if err != nil {
+			return err
 		}
 
 		fmt.Println(string(configFinal))
@@ -507,10 +523,10 @@ func mergeComments(oldComment, newComment string) string {
 	return strings.TrimSpace(oldComment) + "\n\n" + strings.TrimSpace(newComment)
 }
 
-// ----------------
-// diffYAMLs compares two YAML documents and outputs the differences, including relevant comments.
 // TODO: comments are not compared, and they should not
 // TODO: lists should contain only missing items
+// ----------------
+// diffYAMLs compares two YAML documents and outputs the differences.
 func diffYAMLs(original, modified []byte) ([]byte, error) {
 	var origNode, modNode yaml.Node
 	if err := yaml.Unmarshal(original, &origNode); err != nil {
@@ -519,6 +535,10 @@ func diffYAMLs(original, modified []byte) ([]byte, error) {
 	if err := yaml.Unmarshal(modified, &modNode); err != nil {
 		return nil, err
 	}
+
+	// Ignore HeadComment and FootComment
+	clearComments(&origNode)
+	clearComments(&modNode)
 
 	diff := compareNodes(origNode.Content[0], modNode.Content[0])
 	if diff == nil { // If there are no differences
@@ -534,6 +554,16 @@ func diffYAMLs(original, modified []byte) ([]byte, error) {
 	encoder.Close()
 
 	return buffer.Bytes(), nil
+}
+
+// Clean up comments in YAML nodes
+func clearComments(node *yaml.Node) {
+	node.HeadComment = ""
+	node.LineComment = ""
+	node.FootComment = ""
+	for _, n := range node.Content {
+		clearComments(n)
+	}
 }
 
 // compareNodes recursively finds differences between two YAML nodes.
@@ -564,7 +594,6 @@ func compareMappingNodes(orig, mod *yaml.Node) *yaml.Node {
 	for k, modVal := range modMap {
 		origVal, ok := origMap[k]
 		if !ok {
-			// Key not in original, it's an addition.
 			addNodeToDiff(diff, k, modVal)
 		} else {
 			changedNode := compareNodes(origVal, modVal)
@@ -580,19 +609,14 @@ func compareMappingNodes(orig, mod *yaml.Node) *yaml.Node {
 	return diff
 }
 
-// compareSequenceNodes compares two sequence nodes.
+// compareSequenceNodes compares two sequence nodes and returns differences.
 func compareSequenceNodes(orig, mod *yaml.Node) *yaml.Node {
-	// Simple sequence comparison: by index (naive but effective for many use cases).
 	diff := &yaml.Node{Kind: yaml.SequenceNode}
-	minLength := min(len(orig.Content), len(mod.Content))
-	for i := 0; i < minLength; i++ {
-		changedNode := compareNodes(orig.Content[i], mod.Content[i])
-		if changedNode != nil {
-			diff.Content = append(diff.Content, changedNode)
+	origSet := nodeSet(orig)
+	for _, modItem := range mod.Content {
+		if !origSet[modItem.Value] {
+			diff.Content = append(diff.Content, modItem)
 		}
-	}
-	if len(mod.Content) > minLength { // Additional items in mod
-		diff.Content = append(diff.Content, mod.Content[minLength:]...)
 	}
 
 	if len(diff.Content) == 0 {
@@ -601,16 +625,11 @@ func compareSequenceNodes(orig, mod *yaml.Node) *yaml.Node {
 	return diff
 }
 
-// Utility functions
-
-// nodeMap creates a map from a YAML mapping node for easy lookup.
-func nodeMap(node *yaml.Node) map[string]*yaml.Node {
-	result := make(map[string]*yaml.Node)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		keyNode := node.Content[i]
-		if keyNode.Kind == yaml.ScalarNode {
-			result[keyNode.Value] = node.Content[i+1]
-		}
+// nodeSet creates a set of values from sequence nodes
+func nodeSet(node *yaml.Node) map[string]bool {
+	result := make(map[string]bool)
+	for _, item := range node.Content {
+		result[item.Value] = true
 	}
 	return result
 }
@@ -628,4 +647,16 @@ func min(x, y int) int {
 		return x
 	}
 	return y
+}
+
+// nodeMap creates a map from a YAML mapping node for easy lookup.
+func nodeMap(node *yaml.Node) map[string]*yaml.Node {
+	result := make(map[string]*yaml.Node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode := node.Content[i]
+		if keyNode.Kind == yaml.ScalarNode {
+			result[keyNode.Value] = node.Content[i+1]
+		}
+	}
+	return result
 }

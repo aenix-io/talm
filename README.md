@@ -2,6 +2,15 @@
 
 Just like Helm, but for Talos Linux
 
+## Installation
+
+Download binary from Github [releases page](https://github.com/aenix-io/talm/releases/latest)
+
+```bash
+chmod +x ./talm-linux-amd64
+sudo mv talm-linux-amd64 /usr/local/bin/talm
+```
+
 ## Getting Started
 
 Create new project

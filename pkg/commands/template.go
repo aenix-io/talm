@@ -36,6 +36,9 @@ var templateCmd = &cobra.Command{
 	Long:  ``,
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if templateCmdFlags.offline {
+			return template(args)(context.Background(), nil)
+		}
 		if templateCmdFlags.insecure {
 			return WithClientMaintenance(nil, template(args))
 		}

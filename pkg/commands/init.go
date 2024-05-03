@@ -100,14 +100,26 @@ var initCmd = &cobra.Command{
 			return err
 		}
 
-		// Write preset
 		for path, content := range generated.PresetFiles {
 			parts := strings.SplitN(path, "/", 2)
 			chartName := parts[0]
+			// Write preset files
 			if chartName == presetName {
 				file := filepath.Join(Config.RootDir, filepath.Join(parts[1:]...))
 				if parts[len(parts)-1] == "Chart.yaml" {
 					writeToDestination([]byte(fmt.Sprintf(content, clusterName, Config.InitOptions.Version)), file, 0o644)
+				} else {
+					err = writeToDestination([]byte(content), file, 0o644)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			// Write library chart
+			if chartName == "talm" {
+				file := filepath.Join(Config.RootDir, filepath.Join("charts", path))
+				if parts[len(parts)-1] == "Chart.yaml" {
+					writeToDestination([]byte(fmt.Sprintf(content, "talm", Config.InitOptions.Version)), file, 0o644)
 				} else {
 					err = writeToDestination([]byte(content), file, 0o644)
 				}

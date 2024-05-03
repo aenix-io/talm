@@ -85,8 +85,12 @@ func initConfig() {
 	if cmd == nil {
 		return
 	}
-	if cmd.Use == "init" {
-		commands.Config.InitOptions.Version = Version
+	if strings.HasPrefix(cmd.Use, "init") {
+		if strings.HasPrefix(Version, "v") {
+			commands.Config.InitOptions.Version = strings.TrimPrefix(Version, `v`)
+		} else {
+			commands.Config.InitOptions.Version = "0.1.0"
+		}
 	} else {
 		configFile := filepath.Join(commands.Config.RootDir, "Chart.yaml")
 		if err := loadConfig(configFile); err != nil {

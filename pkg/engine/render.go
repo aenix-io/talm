@@ -291,13 +291,22 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 			return nil, err
 		}
 
-		// Overwrite machine.type to preserve this field for diff
+		// Overwrite some fields to preserve them for diff
 		var config map[string]interface{}
 		if err := yaml.Unmarshal(configOrigin, &config); err != nil {
 			return nil, err
 		}
 		if machine, ok := config["machine"].(map[string]interface{}); ok {
 			machine["type"] = "unknown"
+		}
+		if cluster, ok := config["cluster"].(map[string]interface{}); ok {
+			cluster["clusterName"] = ""
+			controlPlane, ok := cluster["controlPlane"].(map[string]interface{})
+			if !ok {
+				controlPlane = map[string]interface{}{}
+				cluster["controlPlane"] = controlPlane
+			}
+			controlPlane["endpoint"] = ""
 		}
 		configOrigin, err = yaml.Marshal(&config)
 		if err != nil {

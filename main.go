@@ -17,12 +17,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var Version = "dev"
+
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
 	Use:               "talm",
 	Short:             "Just like Helm, but for Talos Linux",
 	Long:              ``,
-	Version:           "v0.1.0",
+	Version:           Version,
 	SilenceErrors:     true,
 	SilenceUsage:      true,
 	DisableAutoGenTag: true,

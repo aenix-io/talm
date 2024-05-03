@@ -1,4 +1,9 @@
+VERSION=$(shell git describe --tags)
 TALOS_VERSION=$(shell	go list -m github.com/siderolabs/talos | awk '{sub(/^v/, "", $$NF); print $$NF}')
+
+build:
+	go build -ldflags="-X 'main.Version=$(VERSION)'"
+
 update-tui:
 	rm -rf internal/pkg/tui
 	wget -O- https://github.com/siderolabs/talos/archive/refs/tags/v$(TALOS_VERSION).tar.gz | tar --strip=1 -xzf- talos-$(TALOS_VERSION)/internal/pkg/tui

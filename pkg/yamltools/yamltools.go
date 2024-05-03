@@ -110,21 +110,41 @@ func compareNodes(orig, mod *yaml.Node) *yaml.Node {
 	return nil
 }
 
-// compareMappingNodes compares two mapping nodes and returns differences.
+// compareMappingNodes compares two mapping nodes and returns differences,
+// prioritizing the order in the modified document but considering original document order where possible.
 func compareMappingNodes(orig, mod *yaml.Node) *yaml.Node {
 	diff := &yaml.Node{Kind: yaml.MappingNode}
 	origMap := nodeMap(orig)
 	modMap := nodeMap(mod)
 
-	for k, modVal := range modMap {
-		origVal, ok := origMap[k]
-		if !ok {
-			addNodeToDiff(diff, k, modVal)
-		} else {
+	// Set to track keys from orig that have been processed
+	processedKeys := make(map[string]bool)
+
+	// First pass: iterate over keys in the modified node to maintain order
+	for i := 0; i < len(mod.Content); i += 2 {
+		key := mod.Content[i].Value
+		modVal := modMap[key]
+		origVal, origExists := origMap[key]
+
+		if origExists {
+			processedKeys[key] = true
+			// Compare values for keys existing in both nodes
 			changedNode := compareNodes(origVal, modVal)
 			if changedNode != nil {
-				addNodeToDiff(diff, k, changedNode)
+				addNodeToDiff(diff, key, changedNode)
 			}
+		} else {
+			// New key in mod that doesn't exist in orig
+			addNodeToDiff(diff, key, modVal)
+		}
+	}
+
+	// Second pass: add keys from original that weren't in modified
+	for i := 0; i < len(orig.Content); i += 2 {
+		key := orig.Content[i].Value
+		if !processedKeys[key] {
+			origVal := origMap[key]
+			addNodeToDiff(diff, key, origVal)
 		}
 	}
 

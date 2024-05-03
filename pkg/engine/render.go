@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -333,11 +334,12 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 		}
 	}
 
-	// Copy comments from source configuration to the final output
 	var targetNode yaml.Node
 	if err := yaml.Unmarshal(target, &targetNode); err != nil {
 		return nil, err
 	}
+
+	// Copy comments from source configuration to the final output
 	for _, configPatch := range configPatches {
 		var sourceNode yaml.Node
 		if err := yaml.Unmarshal([]byte(configPatch), &sourceNode); err != nil {
@@ -347,12 +349,16 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 		yamltools.CopyComments(&sourceNode, &targetNode, "", dstPaths)
 		yamltools.ApplyComments(&targetNode, "", dstPaths)
 	}
-	finalConfig, err := yaml.Marshal(&targetNode)
-	if err != nil {
+
+	buf := &bytes.Buffer{}
+	encoder := yaml.NewEncoder(buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&targetNode); err != nil {
 		return nil, err
 	}
+	encoder.Close()
 
-	return finalConfig, nil
+	return buf.Bytes(), nil
 }
 
 func readUnexportedField(field reflect.Value) any {

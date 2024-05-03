@@ -261,11 +261,24 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 		return nil, err
 	}
 	machineType := configBundle.ControlPlaneCfg.Machine().Type()
+	clusterName := configBundle.ControlPlaneCfg.Cluster().Name()
+	clusterEndpoint := configBundle.ControlPlaneCfg.Cluster().Endpoint()
 	if machineType == machine.TypeUnknown {
 		machineType = machine.TypeWorker
 	}
 
-	// Reload config with the correct machine type and apply patches again
+	// Reload config with the correct machineType, clusterName and endpoint
+	configBundleOpts = []bundle.Option{
+		bundle.WithInputOptions(
+			&bundle.InputOptions{
+				ClusterName: clusterName,
+				Endpoint:    clusterEndpoint.String(),
+				KubeVersion: strings.TrimPrefix(opts.KubernetesVersion, "v"),
+				GenOptions:  genOptions,
+			},
+		),
+		bundle.WithVerbose(false),
+	}
 	configBundle, err = bundle.NewBundle(configBundleOpts...)
 	if err != nil {
 		return nil, err

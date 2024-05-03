@@ -14,7 +14,6 @@ import (
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
 	_ "github.com/siderolabs/talos/pkg/grpc/codec" // register codec
 	"github.com/siderolabs/talos/pkg/machinery/client"
-	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 var kubernetesFlag bool
@@ -77,19 +76,4 @@ var Commands []*cobra.Command
 
 func addCommand(cmd *cobra.Command) {
 	Commands = append(Commands, cmd)
-}
-
-func init() {
-	if Config.TemplateOptions.KubernetesVersion == "" {
-		Config.TemplateOptions.KubernetesVersion = constants.DefaultKubernetesVersion
-	}
-	if Config.ApplyOptions.Timeout == "" {
-		Config.ApplyOptions.Timeout = constants.ConfigTryTimeout.String()
-	} else {
-		var err error
-		Config.ApplyOptions.TimeoutDuration, err = time.ParseDuration(Config.ApplyOptions.Timeout)
-		if err != nil {
-			panic(err)
-		}
-	}
 }

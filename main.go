@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -97,6 +98,18 @@ func loadConfig(filename string) error {
 	}
 	if commands.GlobalArgs.Talosconfig == "" {
 		commands.GlobalArgs.Talosconfig = commands.Config.GlobalOptions.Talosconfig
+	}
+	if commands.Config.TemplateOptions.KubernetesVersion == "" {
+		commands.Config.TemplateOptions.KubernetesVersion = constants.DefaultKubernetesVersion
+	}
+	if commands.Config.ApplyOptions.Timeout == "" {
+		commands.Config.ApplyOptions.Timeout = constants.ConfigTryTimeout.String()
+	} else {
+		var err error
+		commands.Config.ApplyOptions.TimeoutDuration, err = time.ParseDuration(commands.Config.ApplyOptions.Timeout)
+		if err != nil {
+			panic(err)
+		}
 	}
 	return nil
 }

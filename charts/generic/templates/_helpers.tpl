@@ -1,4 +1,4 @@
-{{- define "talos.common.config" }}
+{{- define "talos.config" }}
 machine:
   type: {{ .MachineType }}
   kubelet:

@@ -1,2 +1,2 @@
 {{- $_ := set . "MachineType" "controlplane" -}}
-{{- include "talos.common.config" . }}
+{{- include "talos.config" . }}

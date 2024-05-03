@@ -28,7 +28,7 @@ upgradeOptions:
   stage: false
   force: false
 `,
-	"cozystack/templates/_helpers.tpl": `{{- define "talos.common.config" }}
+	"cozystack/templates/_helpers.tpl": `{{- define "talos.config" }}
 machine:
   type: {{ .MachineType }}
   kubelet:
@@ -107,10 +107,10 @@ cluster:
 {{- end }}
 `,
 	"cozystack/templates/controlplane.yaml": `{{- $_ := set . "MachineType" "controlplane" -}}
-{{- include "talos.common.config" . }}
+{{- include "talos.config" . }}
 `,
 	"cozystack/templates/worker.yaml": `{{- $_ := set . "MachineType" "worker" -}}
-{{- include "talos.common.config" . }}
+{{- include "talos.config" . }}
 `,
 	"cozystack/values.yaml": `endpoint: "https://192.168.100.10:6443"
 floatingIP: 192.168.100.10
@@ -136,7 +136,7 @@ templateOptions:
   fileValues: []
   jsonValues: []
   literalValues: []
-  talosVersion: "v1.6"
+  talosVersion: ""
   withSecrets: "secrets.yaml"
   kubernetesVersion: ""
   full: false
@@ -149,7 +149,7 @@ upgradeOptions:
   stage: false
   force: false
 `,
-	"generic/templates/_helpers.tpl": `{{- define "talos.common.config" }}
+	"generic/templates/_helpers.tpl": `{{- define "talos.config" }}
 machine:
   type: {{ .MachineType }}
   kubelet:
@@ -192,10 +192,10 @@ cluster:
 {{- end }}
 `,
 	"generic/templates/controlplane.yaml": `{{- $_ := set . "MachineType" "controlplane" -}}
-{{- include "talos.common.config" . }}
+{{- include "talos.config" . }}
 `,
 	"generic/templates/worker.yaml": `{{- $_ := set . "MachineType" "worker" -}}
-{{- include "talos.common.config" . }}
+{{- include "talos.config" . }}
 `,
 	"generic/values.yaml": `endpoint: "https://192.168.100.10:6443"
 podSubnets:

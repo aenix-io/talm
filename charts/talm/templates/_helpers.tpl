@@ -49,7 +49,7 @@
 # -- Discovered interfaces:
 {{- range (lookup "links" "" "").items }}
 {{- if regexMatch "^(eno|eth|enp|enx|ens)" .metadata.id }}
-# enx{{ .spec.permanentAddr | replace ":" "" }}:
+# enx{{ .spec.hardwareAddr | replace ":" "" }}:
 #   name: {{ .metadata.id }}
 #   mac:{{ .spec.hardwareAddr }}
 #   bus:{{ .spec.busPath }}
@@ -69,7 +69,7 @@
 {{- end }}
 
 {{- define "talm.predictable_link_name" -}}
-enx{{ lookup "links" "" . | dig "spec" "permanentAddr" . | replace ":" "" }}
+{{ printf "enx%s" (lookup "links" "" . | dig "spec" "hardwareAddr" . | replace ":" "") }}
 {{- end }}
 
 {{- define "talm.discovered.default_gateway" }}

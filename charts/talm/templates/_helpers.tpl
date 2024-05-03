@@ -44,16 +44,33 @@
 {{- end }}
 {{- end }}
 
+{{- define "talm.discovered.default_addresses_by_gateway" }}
+{{- $linkName := "" }}
+{{- $family := "" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- $linkName = .spec.outLinkName }}
+{{- $family = .spec.family }}
+{{- end }}
+{{- end }}
+{{- $addresses := list }}
+{{- range (lookup "addresses" "" "").items }}
+{{- if and (eq .spec.linkName $linkName) (eq .spec.family $family) (not (eq .spec.scope "host")) }}
+{{- $addresses = append $addresses .spec.address }}
+{{- end }}
+{{- end }}
+{{- toJson $addresses }}
+{{- end }}
 
 {{- define "talm.discovered.physical_links_info" }}
 # -- Discovered interfaces:
 {{- range (lookup "links" "" "").items }}
 {{- if regexMatch "^(eno|eth|enp|enx|ens)" .metadata.id }}
 # enx{{ .spec.hardwareAddr | replace ":" "" }}:
-#   name: {{ .metadata.id }}
-#   mac:{{ .spec.hardwareAddr }}
-#   bus:{{ .spec.busPath }}
-#   driver:{{ .spec.driver }}
+#   id: {{ .metadata.id }}
+#   hardwareAddr:{{ .spec.hardwareAddr }}
+#   busPath: {{ .spec.busPath }}
+#   driver: {{ .spec.driver }}
 #   vendor: {{ .spec.vendor }}
 #   product: {{ .spec.product }})
 {{- end }}
@@ -64,6 +81,22 @@
 {{- range (lookup "addresses" "" "").items }}
 {{- if has .spec.address (fromJsonArray (include "talm.discovered.default_addresses" .)) }}
 {{- .spec.linkName }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "talm.discovered.default_link_name_by_gateway" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- .spec.outLinkName }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "talm.discovered.default_link_address_by_gateway" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- (lookup "links" "" .spec.outLinkName).spec.hardwareAddr }}
 {{- end }}
 {{- end }}
 {{- end }}

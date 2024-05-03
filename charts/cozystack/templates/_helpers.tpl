@@ -33,9 +33,9 @@ machine:
     nameservers: {{ include "talm.discovered.default_resolvers" . }}
     {{- (include "talm.discovered.physical_links_info" .) | nindent 4 }}
     interfaces:
-    {{- $defaultLink := (include "talm.discovered.default_link_name" .) }}
-    - interface: {{ include "talm.predictable_link_name" $defaultLink }}
-      addresses: {{ include "talm.discovered.default_addresses" . }}
+    - deviceSelector:
+        hardwareAddr: "{{ include "talm.discovered.default_link_address_by_gateway" . }}"
+      addresses: {{ include "talm.discovered.default_addresses_by_gateway" . }}
       routes:
         - network: 0.0.0.0/0
           gateway: {{ include "talm.discovered.default_gateway" . }}
@@ -43,6 +43,7 @@ machine:
       vip:
         ip: {{ . }}
       {{- end }}
+
 
 cluster:
   network:

@@ -1,3 +1,5 @@
+//go:generate go run tools/generate_presets.go
+
 package main
 
 import (
@@ -80,7 +82,12 @@ func init() {
 
 func initConfig() {
 	cmd, _, _ := rootCmd.Find(os.Args[1:])
-	if cmd != nil && cmd.Use != "init" {
+	if cmd == nil {
+		return
+	}
+	if cmd.Use == "init" {
+		commands.Config.InitOptions.Version = Version
+	} else {
 		configFile := filepath.Join(commands.Config.RootDir, "Chart.yaml")
 		if err := loadConfig(configFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)

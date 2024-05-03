@@ -50,6 +50,9 @@ var Config struct {
 		Stage    bool `yaml:"stage"`
 		Force    bool `yaml:"force"`
 	} `yaml:"upgradeOptions"`
+	InitOptions struct {
+		Version string
+	}
 }
 
 const pathAutoCompleteLimit = 500

@@ -1,0 +1,5 @@
+apiVersion: v2
+type: library
+name: talm
+version: 0.1.0
+description: A library Talm chart for Talos Linux

@@ -1,0 +1,26 @@
+apiVersion: v2
+name: cozystack
+type: application
+version: 0.1.0
+globalOptions:
+  talosconfig: "talosconfig"
+templateOptions:
+  offline: false
+  valueFiles: []
+  values: []
+  stringValues: []
+  fileValues: []
+  jsonValues: []
+  literalValues: []
+  talosVersion: "v1.6"
+  withSecrets: "secrets.yaml"
+  kubernetesVersion: ""
+  full: false
+applyOptions:
+  preserve: false
+  timeout: "1m"
+  certFingerprints: []
+upgradeOptions:
+  preserve: false
+  stage: false
+  force: false

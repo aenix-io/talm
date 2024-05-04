@@ -6,6 +6,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/aenix-io/talm/pkg/engine"
@@ -72,8 +73,13 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 			return fmt.Errorf("failed to render templates: %w", err)
 		}
 
+		modeline, err := generateModeline(args)
+		if err != nil {
+			return fmt.Errorf("failed generate modeline: %w", err)
+		}
+
 		// Print the result to the standard output
-		fmt.Println(string(result))
+		fmt.Printf("%s\n%s", modeline, string(result))
 
 		return nil
 	}
@@ -119,4 +125,29 @@ func init() {
 	}
 
 	addCommand(templateCmd)
+}
+
+// generateModeline creates a modeline string using JSON formatting for values
+func generateModeline(templates []string) (string, error) {
+	// Convert Nodes to JSON
+	nodesJSON, err := json.Marshal(GlobalArgs.Nodes)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal nodes: %v", err)
+	}
+
+	// Convert Endpoints to JSON
+	endpointsJSON, err := json.Marshal(GlobalArgs.Endpoints)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal endpoints: %v", err)
+	}
+
+	// Convert Templates to JSON
+	templatesJSON, err := json.Marshal(templates)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal templates: %v", err)
+	}
+
+	// Form the final modeline string
+	modeline := fmt.Sprintf(`# talm: nodes=%s, endpoints=%s, templates=%s`, string(nodesJSON), string(endpointsJSON), string(templatesJSON))
+	return modeline, nil
 }

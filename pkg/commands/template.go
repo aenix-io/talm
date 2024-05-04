@@ -18,7 +18,8 @@ import (
 
 var templateCmdFlags struct {
 	insecure          bool
-	valueFiles        []string // -f/--values
+	valueFiles        []string // --values
+	templateFiles     []string // -t/--template
 	stringValues      []string // --set-string
 	values            []string // --set
 	fileValues        []string // --set-file
@@ -32,10 +33,10 @@ var templateCmdFlags struct {
 }
 
 var templateCmd = &cobra.Command{
-	Use:   "template <file ..>",
+	Use:   "template",
 	Short: "Render templates locally and display the output",
 	Long:  ``,
-	Args:  cobra.MinimumNArgs(1),
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if templateCmdFlags.offline {
 			return template(args)(context.Background(), nil)
@@ -65,7 +66,7 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 			Root:              Config.RootDir,
 			Offline:           templateCmdFlags.offline,
 			KubernetesVersion: templateCmdFlags.kubernetesVersion,
-			TemplateFiles:     args,
+			TemplateFiles:     templateCmdFlags.templateFiles,
 		}
 
 		result, err := engine.Render(ctx, c, opts)
@@ -87,7 +88,8 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 
 func init() {
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.insecure, "insecure", "i", false, "template using the insecure (encrypted with no auth) maintenance service")
-	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.valueFiles, "values", "f", []string{}, "specify values in a YAML file (can specify multiple)")
+	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.valueFiles, "values", "", []string{}, "specify values in a YAML file (can specify multiple)")
+	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.templateFiles, "template", "t", []string{}, "specify templates to rendered manifest from (can specify multiple)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.stringValues, "set-string", []string{}, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")

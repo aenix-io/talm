@@ -23,15 +23,16 @@ import (
 
 var initCmdFlags struct {
 	force        bool
+	preset       string
 	talosVersion string
 }
 
 // initCmd represents the `init` command.
 var initCmd = &cobra.Command{
-	Use:   "init [preset]",
+	Use:   "init",
 	Short: "Initialize a new project and generate default values",
 	Long:  ``,
-	Args:  cobra.MaximumNArgs(1),
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
 			secretsBundle   *secrets.Bundle
@@ -45,13 +46,6 @@ var initCmd = &cobra.Command{
 				return fmt.Errorf("invalid talos-version: %w", err)
 			}
 		}
-		presetName := "generic"
-		if len(args) == 1 {
-			presetName = args[0]
-		}
-		if !isValidPreset(presetName) {
-			return fmt.Errorf("invalid preset: %s. Valid presets are: %s", presetName, generated.AvailablePresets)
-		}
 
 		secretsBundle, err = secrets.NewBundle(secrets.NewFixedClock(time.Now()),
 			versionContract,
@@ -60,6 +54,9 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to create secrets bundle: %w", err)
 		}
 		var genOptions []generate.Option //nolint:prealloc
+		if !isValidPreset(initCmdFlags.preset) {
+			return fmt.Errorf("invalid preset: %s. Valid presets are: %s", initCmdFlags.preset, generated.AvailablePresets)
+		}
 		if initCmdFlags.talosVersion != "" {
 			var versionContract *config.VersionContract
 
@@ -104,7 +101,7 @@ var initCmd = &cobra.Command{
 			parts := strings.SplitN(path, "/", 2)
 			chartName := parts[0]
 			// Write preset files
-			if chartName == presetName {
+			if chartName == initCmdFlags.preset {
 				file := filepath.Join(Config.RootDir, filepath.Join(parts[1:]...))
 				if parts[len(parts)-1] == "Chart.yaml" {
 					writeToDestination([]byte(fmt.Sprintf(content, clusterName, Config.InitOptions.Version)), file, 0o644)
@@ -150,6 +147,7 @@ func writeSecretsBundleToFile(bundle *secrets.Bundle) error {
 
 func init() {
 	initCmd.Flags().StringVar(&initCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
+	initCmd.Flags().StringVarP(&initCmdFlags.preset, "preset", "p", "generic", "specify preset to generate files")
 	initCmd.Flags().BoolVar(&initCmdFlags.force, "force", false, "will overwrite existing files")
 
 	initCmd.PreRunE = func(cmd *cobra.Command, args []string) error {

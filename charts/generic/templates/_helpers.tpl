@@ -14,7 +14,7 @@ machine:
     {{- (include "talm.discovered.physical_links_info" .) | nindent 4 }}
     interfaces:
     - deviceSelector:
-        hardwareAddr: "{{ include "talm.discovered.default_link_address_by_gateway" . }}"
+        {{- include "talm.discovered.default_link_selector_by_gateway" . | nindent 8 }}
       addresses: {{ include "talm.discovered.default_addresses_by_gateway" . }}
       routes:
         - network: 0.0.0.0/0

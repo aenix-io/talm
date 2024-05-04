@@ -64,7 +64,7 @@ machine:
     {{- (include "talm.discovered.physical_links_info" .) | nindent 4 }}
     interfaces:
     - deviceSelector:
-        hardwareAddr: "{{ include "talm.discovered.default_link_address_by_gateway" . }}"
+        {{- include "talm.discovered.default_link_selector_by_gateway" . | nindent 8 }}
       addresses: {{ include "talm.discovered.default_addresses_by_gateway" . }}
       routes:
         - network: 0.0.0.0/0
@@ -166,7 +166,7 @@ machine:
     {{- (include "talm.discovered.physical_links_info" .) | nindent 4 }}
     interfaces:
     - deviceSelector:
-        hardwareAddr: "{{ include "talm.discovered.default_link_address_by_gateway" . }}"
+        {{- include "talm.discovered.default_link_selector_by_gateway" . | nindent 8 }}
       addresses: {{ include "talm.discovered.default_addresses_by_gateway" . }}
       routes:
         - network: 0.0.0.0/0
@@ -311,6 +311,25 @@ description: A library Talm chart for Talos Linux
 {{- range (lookup "routes" "" "").items }}
 {{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
 {{- (lookup "links" "" .spec.outLinkName).spec.hardwareAddr }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "talm.discovered.default_link_bus_by_gateway" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- (lookup "links" "" .spec.outLinkName).spec.hardwareAddr }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "talm.discovered.default_link_selector_by_gateway" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- with (lookup "links" "" .spec.outLinkName) }}
+hardwareAddr: {{ .spec.hardwareAddr }}
+driver: {{ .spec.driver }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

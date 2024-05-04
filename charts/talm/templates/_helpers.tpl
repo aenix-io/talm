@@ -101,6 +101,25 @@
 {{- end }}
 {{- end }}
 
+{{- define "talm.discovered.default_link_bus_by_gateway" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- (lookup "links" "" .spec.outLinkName).spec.hardwareAddr }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "talm.discovered.default_link_selector_by_gateway" }}
+{{- range (lookup "routes" "" "").items }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- with (lookup "links" "" .spec.outLinkName) }}
+hardwareAddr: {{ .spec.hardwareAddr }}
+driver: {{ .spec.driver }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{- define "talm.predictable_link_name" -}}
 {{ printf "enx%s" (lookup "links" "" . | dig "spec" "hardwareAddr" . | replace ":" "") }}
 {{- end }}

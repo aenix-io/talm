@@ -6,8 +6,11 @@ package commands
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/aenix-io/talm/pkg/modeline"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
@@ -66,7 +69,24 @@ func WithClientNoNodes(action func(context.Context, *client.Client) error, dialO
 
 // WithClient builds upon WithClientNoNodes to provide set of nodes on request context based on config & flags.
 func WithClient(action func(context.Context, *client.Client) error, dialOptions ...grpc.DialOption) error {
-	return GlobalArgs.WithClient(action, dialOptions...)
+	return WithClientNoNodes(
+		func(ctx context.Context, cli *client.Client) error {
+			if len(GlobalArgs.Nodes) < 1 {
+				configContext := cli.GetConfigContext()
+				if configContext == nil {
+					return errors.New("failed to resolve config context")
+				}
+
+				GlobalArgs.Nodes = configContext.Nodes
+			}
+
+			ctx = client.WithNodes(ctx, GlobalArgs.Nodes...)
+
+			return action(ctx, cli)
+		},
+		dialOptions...,
+	)
+
 }
 
 // WithClientMaintenance wraps common code to initialize Talos client in maintenance (insecure mode).
@@ -79,4 +99,29 @@ var Commands []*cobra.Command
 
 func addCommand(cmd *cobra.Command) {
 	Commands = append(Commands, cmd)
+}
+
+func processModelineAndUpdateGlobals(configFile string, nodesFromArgs bool, endpointsFromArgs bool) error {
+	// Use the new function to handle modeline
+	modelineConfig, err := modeline.ReadAndParseModeline(configFile)
+	if err != nil {
+		fmt.Printf("Warning: modeline parsing failed: %v\n", err)
+		return err
+	}
+
+	// Update global settings if modeline was successfully parsed
+	if modelineConfig != nil {
+		if !nodesFromArgs && len(modelineConfig.Nodes) > 0 {
+			GlobalArgs.Nodes = modelineConfig.Nodes
+		}
+		if !endpointsFromArgs && len(modelineConfig.Endpoints) > 0 {
+			GlobalArgs.Endpoints = modelineConfig.Endpoints
+		}
+	}
+
+	if len(GlobalArgs.Nodes) < 1 {
+		return errors.New("nodes are not set for the command: please use `--nodes` flag or configuration file to set the nodes to run the command against")
+	}
+
+	return nil
 }

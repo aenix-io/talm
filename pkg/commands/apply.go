@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/aenix-io/talm/pkg/modeline"
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
@@ -54,25 +53,11 @@ var applyCmd = &cobra.Command{
 
 func apply(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
-		nodesFromModeline := false
-		endpointsFromModeline := false
+		nodesFromArgs := len(GlobalArgs.Nodes) > 0
+		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
 		for _, configFile := range applyCmdFlags.configFiles {
-			// Use the new function to handle modeline
-			modelineConfig, err := modeline.ReadAndParseModeline(configFile)
-			if err != nil {
-				fmt.Printf("Warning: modeline parsing failed: %v\n", err)
-			}
-
-			// Update global settings if modeline was successfully parsed
-			if modelineConfig != nil {
-				if nodesFromModeline || (len(GlobalArgs.Nodes) == 0 && len(modelineConfig.Nodes) > 0) {
-					GlobalArgs.Nodes = modelineConfig.Nodes
-					nodesFromModeline = true
-				}
-				if endpointsFromModeline || (len(GlobalArgs.Endpoints) == 0 && len(modelineConfig.Endpoints) > 0) {
-					GlobalArgs.Endpoints = modelineConfig.Endpoints
-					endpointsFromModeline = true
-				}
+			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs); err != nil {
+				return err
 			}
 
 			opts := engine.Options{
@@ -93,7 +78,29 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 				return fmt.Errorf("error serializing configuration: %s", err)
 			}
 
+			withClient := func(f func(ctx context.Context, c *client.Client) error) error {
+				if applyCmdFlags.insecure {
+					return WithClientMaintenance(applyCmdFlags.certFingerprints, f)
+				}
+
+				return WithClientNoNodes(func(ctx context.Context, cli *client.Client) error {
+					if len(GlobalArgs.Nodes) < 1 {
+						configContext := cli.GetConfigContext()
+						if configContext == nil {
+							return errors.New("failed to resolve config context")
+						}
+
+						GlobalArgs.Nodes = configContext.Nodes
+					}
+
+					ctx = client.WithNodes(ctx, GlobalArgs.Nodes...)
+
+					return f(ctx, cli)
+				})
+			}
+
 			err = withClient(func(ctx context.Context, c *client.Client) error {
+				fmt.Printf("Nodes: %s\n", GlobalArgs.Nodes)
 				resp, err := c.ApplyConfiguration(ctx, &machineapi.ApplyConfigurationRequest{
 					Data:           result,
 					Mode:           applyCmdFlags.Mode.Mode,
@@ -114,31 +121,6 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 		}
 		return nil
 	}
-}
-
-func withClient(f func(ctx context.Context, c *client.Client) error) error {
-	if applyCmdFlags.insecure {
-		return WithClientMaintenance(applyCmdFlags.certFingerprints, f)
-	}
-
-	return WithClientNoNodes(func(ctx context.Context, cli *client.Client) error {
-		if len(GlobalArgs.Nodes) < 1 {
-			configContext := cli.GetConfigContext()
-			if configContext == nil {
-				return errors.New("failed to resolve config context")
-			}
-
-			GlobalArgs.Nodes = configContext.Nodes
-		}
-
-		if len(GlobalArgs.Nodes) < 1 {
-			return errors.New("nodes are not set for the command: please use `--nodes` flag or configuration file to set the nodes to run the command against")
-		}
-
-		ctx = client.WithNodes(ctx, GlobalArgs.Nodes...)
-
-		return f(ctx, cli)
-	})
 }
 
 // readFirstLine reads and returns the first line of the file specified by the filename.

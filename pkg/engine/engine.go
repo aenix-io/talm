@@ -51,6 +51,96 @@ type Options struct {
 	Offline           bool
 	KubernetesVersion string
 	TemplateFiles     []string
+	ClusterName       string
+	Endpoint          string
+}
+
+// FullConfigProcess handles the full process of creating and updating the Bundle.
+func FullConfigProcess(ctx context.Context, opts Options, patches []string) (*bundle.Bundle, error) {
+	configBundle, err := InitializeConfigBundle(opts)
+	if err != nil {
+		return nil, fmt.Errorf("initial config bundle error: %w", err)
+	}
+
+	loadedPatches, err := configpatcher.LoadPatches(patches)
+	if err != nil {
+		return nil, err
+	}
+
+	err = configBundle.ApplyPatches(loadedPatches, true, true)
+	if err != nil {
+		return nil, fmt.Errorf("apply initial patches error: %w", err)
+	}
+
+	// Updating parameters after applying patches
+	machineType := configBundle.ControlPlaneCfg.Machine().Type()
+	clusterName := configBundle.ControlPlaneCfg.Cluster().Name()
+	clusterEndpoint := configBundle.ControlPlaneCfg.Cluster().Endpoint()
+
+	if machineType == machine.TypeUnknown {
+		machineType = machine.TypeWorker
+	}
+
+	// Reinitializing the configuration bundle with updated parameters
+	updatedOpts := Options{
+		TalosVersion:      opts.TalosVersion,
+		WithSecrets:       opts.WithSecrets,
+		KubernetesVersion: opts.KubernetesVersion,
+		ClusterName:       clusterName,
+		Endpoint:          clusterEndpoint.String(),
+	}
+	configBundle, err = InitializeConfigBundle(updatedOpts)
+	if err != nil {
+		return nil, fmt.Errorf("reinit config bundle error: %w", err)
+	}
+
+	// Applying updated patches
+	err = configBundle.ApplyPatches(loadedPatches, true, true)
+	if err != nil {
+		return nil, fmt.Errorf("apply updated patches error: %w", err)
+	}
+
+	return configBundle, nil
+}
+
+// Function to initialize configuration settings
+func InitializeConfigBundle(opts Options) (*bundle.Bundle, error) {
+	genOptions := []generate.Option{}
+
+	if opts.TalosVersion != "" {
+		versionContract, err := config.ParseContractFromVersion(opts.TalosVersion)
+		if err != nil {
+			return nil, fmt.Errorf("invalid talos-version: %w", err)
+		}
+		genOptions = append(genOptions, generate.WithVersionContract(versionContract))
+	}
+
+	if opts.WithSecrets != "" {
+		secretsBundle, err := secrets.LoadBundle(opts.WithSecrets)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load secrets bundle: %w", err)
+		}
+		genOptions = append(genOptions, generate.WithSecretsBundle(secretsBundle))
+	}
+
+	configBundleOpts := []bundle.Option{
+		bundle.WithInputOptions(
+			&bundle.InputOptions{
+				ClusterName: opts.ClusterName,
+				Endpoint:    opts.Endpoint,
+				KubeVersion: strings.TrimPrefix(opts.KubernetesVersion, "v"),
+				GenOptions:  genOptions,
+			},
+		),
+		bundle.WithVerbose(false),
+	}
+
+	return bundle.NewBundle(configBundleOpts...)
+}
+
+// Function for serializing the configuration
+func SerializeConfiguration(configBundle *bundle.Bundle, machineType machine.Type) ([]byte, error) {
+	return configBundle.Serialize(encoder.CommentsDisabled, machineType)
 }
 
 // Render executes the rendering of templates based on the provided options.

@@ -1,8 +1,10 @@
 package modeline
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -46,4 +48,50 @@ func ParseModeline(line string) (*Config, error) {
 		return config, nil
 	}
 	return nil, fmt.Errorf("modeline prefix not found")
+}
+
+// ReadAndParseModeline reads the first line from a file and parses the modeline.
+func ReadAndParseModeline(filePath string) (*Config, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("error opening config file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if scanner.Scan() {
+		firstLine := scanner.Text()
+		return ParseModeline(firstLine)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading first line of config file: %v", err)
+	}
+
+	return nil, fmt.Errorf("config file is empty")
+}
+
+// GenerateModeline creates a modeline string using JSON formatting for values
+func GenerateModeline(nodes []string, endpoints []string, templates []string) (string, error) {
+	// Convert Nodes to JSON
+	nodesJSON, err := json.Marshal(nodes)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal nodes: %v", err)
+	}
+
+	// Convert Endpoints to JSON
+	endpointsJSON, err := json.Marshal(endpoints)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal endpoints: %v", err)
+	}
+
+	// Convert Templates to JSON
+	templatesJSON, err := json.Marshal(templates)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal templates: %v", err)
+	}
+
+	// Form the final modeline string
+	modeline := fmt.Sprintf(`# talm: nodes=%s, endpoints=%s, templates=%s`, string(nodesJSON), string(endpointsJSON), string(templatesJSON))
+	return modeline, nil
 }

@@ -7,9 +7,11 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/aenix-io/talm/pkg/engine"
+	"github.com/aenix-io/talm/pkg/modeline"
 	"github.com/spf13/cobra"
 
 	"github.com/siderolabs/talos/pkg/machinery/client"
@@ -50,7 +52,6 @@ var templateCmd = &cobra.Command{
 }
 
 func template(args []string) func(ctx context.Context, c *client.Client) error {
-
 	return func(ctx context.Context, c *client.Client) error {
 		opts := engine.Options{
 			Insecure:          templateCmdFlags.insecure,
@@ -69,17 +70,21 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 			TemplateFiles:     templateCmdFlags.templateFiles,
 		}
 
+		if len(templateCmdFlags.templateFiles) < 1 {
+			return errors.New("templates are not set for the command: please use `--template` flag to set the templates to render manifest from")
+		}
+
 		result, err := engine.Render(ctx, c, opts)
 		if err != nil {
 			return fmt.Errorf("failed to render templates: %w", err)
 		}
 
-		modeline, err := generateModeline(args)
+		// Use the GenerateModeline from the modeline package
+		modeline, err := modeline.GenerateModeline(GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
 		if err != nil {
-			return fmt.Errorf("failed generate modeline: %w", err)
+			return fmt.Errorf("failed to generate modeline: %w", err)
 		}
 
-		// Print the result to the standard output
 		fmt.Printf("%s\n%s", modeline, string(result))
 
 		return nil
@@ -89,7 +94,7 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 func init() {
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.insecure, "insecure", "i", false, "template using the insecure (encrypted with no auth) maintenance service")
 	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.valueFiles, "values", "", []string{}, "specify values in a YAML file (can specify multiple)")
-	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.templateFiles, "template", "t", []string{}, "specify templates to rendered manifest from (can specify multiple)")
+	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.templateFiles, "template", "t", []string{}, "specify templates to render manifest from (can specify multiple)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.stringValues, "set-string", []string{}, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.fileValues, "set-file", []string{}, "set values from respective files specified via the command line (can specify multiple or separate values with commas: key1=path1,key2=path2)")

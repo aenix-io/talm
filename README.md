@@ -18,13 +18,14 @@ Create new project
 mkdir newcluster
 cd newcluster
 talm init
+mkdir nodes
 ```
 
 Boot Talos Linux node, let's say it has address `1.2.3.4`
 
 Gather node information:
 ```bash
-talm -n 1.2.3.4 -e 1.2.3.4 template templates/controlplane.yaml -i > templates/node1.yaml
+talm -n 1.2.3.4 -e 1.2.3.4 template -t templates/controlplane.yaml -i > nodes/node1.yaml
 ```
 
 Edit `templates/node1.yaml` file:
@@ -76,12 +77,7 @@ cluster:
         endpoint: https://192.168.0.1:6443
 ```
 
-Show resulted config:
-```bash
-talm -n 1.2.3.4 -e 1.2.3.4 template templates/node1.yaml -i --full
-```
-
 Apply config:
 ```bash
-talm -n 1.2.3.4 -e 1.2.3.4 apply templates/controlplane.yaml -i
+talm apply -f nodes/node1.yaml -i
 ```

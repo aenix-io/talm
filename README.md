@@ -1,6 +1,8 @@
 # Talm
 
-Just like Helm, but for Talos Linux
+Manage Talos the GitOps Way!
+
+Talm is just like Helm, but for Talos Linux
 
 ## Installation
 
@@ -30,6 +32,7 @@ talm -n 1.2.3.4 -e 1.2.3.4 template -t templates/controlplane.yaml -i > nodes/no
 
 Edit `templates/node1.yaml` file:
 ```yaml
+# talm: nodes=["1.2.3.4"], endpoints=["1.2.3.4"], templates=["templates/controlplane.yaml"]
 machine:
     network:
         # -- Discovered interfaces:
@@ -81,3 +84,45 @@ Apply config:
 ```bash
 talm apply -f nodes/node1.yaml -i
 ```
+
+Upgrade node:
+```bash
+talm upgrade -f nodes/node1.yaml
+```
+
+Show diff:
+```bash
+talm apply -f nodes/node1.yaml --dry-run
+```
+
+Re-template and update generated file in place (this will overwrite it):
+```
+talm template -f nodes/node1.yaml -I
+```
+
+## Customization
+
+You're free to edit template files in `./templates` directory.
+
+All the [Helm](https://helm.sh/docs/chart_template_guide/functions_and_pipelines/) and [Sprig](https://masterminds.github.io/sprig/) functions are supported, including lookup for talos resources!
+
+Lookup function example:
+
+```helm
+{{ lookup "nodeaddresses" "network" "default" }}
+```
+
+\- is equiualent to:
+
+```bash
+talosctl get nodeaddresses --namespace=network default
+```
+
+
+Querying disks map example:
+
+```helm
+{{ range .Disks }}{{ if .system_disk }}{{ .device_name }}{{ end }}{{ end }}
+```
+
+\- will return the system disk device name

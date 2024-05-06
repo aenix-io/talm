@@ -24,7 +24,7 @@ var Version = "dev"
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
 	Use:               "talm",
-	Short:             "Just like Helm, but for Talos Linux",
+	Short:             "Manage Talos the GitOps Way!",
 	Long:              ``,
 	Version:           Version,
 	SilenceErrors:     true,

@@ -186,7 +186,7 @@ func generateOutput(ctx context.Context, c *client.Client, args []string) (strin
 func init() {
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.insecure, "insecure", "i", false, "template using the insecure (encrypted with no auth) maintenance service")
 	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.configFiles, "file", "f", nil, "specify config files for in-place update (can specify multiple)")
-	templateCmd.Flags().BoolVarP(&templateCmdFlags.inplace, "in-place", "I", false, "update generated files in place")
+	templateCmd.Flags().BoolVarP(&templateCmdFlags.inplace, "in-place", "I", false, "re-template and update generated files in place (overwrite them)")
 	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.valueFiles, "values", "", []string{}, "specify values in a YAML file (can specify multiple)")
 	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.templateFiles, "template", "t", []string{}, "specify templates to render manifest from (can specify multiple)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")

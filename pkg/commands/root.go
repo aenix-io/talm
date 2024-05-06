@@ -102,7 +102,6 @@ func addCommand(cmd *cobra.Command) {
 }
 
 func processModelineAndUpdateGlobals(configFile string, nodesFromArgs bool, endpointsFromArgs bool) error {
-	// Use the new function to handle modeline
 	modelineConfig, err := modeline.ReadAndParseModeline(configFile)
 	if err != nil {
 		fmt.Printf("Warning: modeline parsing failed: %v\n", err)

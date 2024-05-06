@@ -100,7 +100,8 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 			}
 
 			err = withClient(func(ctx context.Context, c *client.Client) error {
-				fmt.Printf("Nodes: %s\n", GlobalArgs.Nodes)
+				fmt.Printf("- talm: file=%s, nodes=%s, endpoints=%s\n", configFile, GlobalArgs.Nodes, GlobalArgs.Endpoints)
+
 				resp, err := c.ApplyConfiguration(ctx, &machineapi.ApplyConfigurationRequest{
 					Data:           result,
 					Mode:           applyCmdFlags.Mode.Mode,
@@ -117,6 +118,14 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 			})
 			if err != nil {
 				return err
+			}
+
+			// Reset args
+			if !nodesFromArgs {
+				GlobalArgs.Nodes = []string{}
+			}
+			if !endpointsFromArgs {
+				GlobalArgs.Endpoints = []string{}
 			}
 		}
 		return nil

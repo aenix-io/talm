@@ -122,6 +122,8 @@ func upgrade(args []string) func(ctx context.Context, c *client.Client) error {
 
 			common.SuppressErrors = true
 
+			fmt.Printf("- talm: file=%s, nodes=%s, endpoints=%s, image=%s\n", configFile, GlobalArgs.Nodes, GlobalArgs.Endpoints, image)
+
 			err = action.NewTracker(
 				&GlobalArgs,
 				action.MachineReadyEventFn,

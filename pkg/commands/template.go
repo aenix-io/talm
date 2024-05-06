@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/aenix-io/talm/pkg/engine"
 	"github.com/aenix-io/talm/pkg/modeline"
@@ -20,6 +21,7 @@ import (
 
 var templateCmdFlags struct {
 	insecure          bool
+	configFiles       []string // -f/--files
 	valueFiles        []string // --values
 	templateFiles     []string // -t/--template
 	stringValues      []string // --set-string
@@ -32,6 +34,7 @@ var templateCmdFlags struct {
 	full              bool
 	offline           bool
 	kubernetesVersion string
+	inplace           bool
 }
 
 var templateCmd = &cobra.Command{
@@ -40,59 +43,150 @@ var templateCmd = &cobra.Command{
 	Long:  ``,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if templateCmdFlags.offline {
-			return template(args)(context.Background(), nil)
-		}
-		if templateCmdFlags.insecure {
-			return WithClientMaintenance(nil, template(args))
+		templateFunc := template
+		if templateCmdFlags.inplace {
+			templateFunc = templateUpdate
+			if len(templateCmdFlags.configFiles) == 0 {
+				return fmt.Errorf("cannot use --in-place without --file")
+			}
+		} else {
+			if len(templateCmdFlags.configFiles) != 0 {
+				return fmt.Errorf("cannot use --file without --in-place")
+			}
+			if len(templateCmdFlags.templateFiles) < 1 {
+				return errors.New("templates are not set for the command: please use `--template` flag to set the templates to render manifest from")
+			}
 		}
 
-		return WithClient(template(args))
+		if templateCmdFlags.offline {
+			return templateFunc(args)(context.Background(), nil)
+		}
+		if templateCmdFlags.insecure {
+			return WithClientMaintenance(nil, templateFunc(args))
+		}
+
+		return WithClient(templateFunc(args))
 	},
 }
 
 func template(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
-		opts := engine.Options{
-			Insecure:          templateCmdFlags.insecure,
-			ValueFiles:        templateCmdFlags.valueFiles,
-			StringValues:      templateCmdFlags.stringValues,
-			Values:            templateCmdFlags.values,
-			FileValues:        templateCmdFlags.fileValues,
-			JsonValues:        templateCmdFlags.jsonValues,
-			LiteralValues:     templateCmdFlags.literalValues,
-			TalosVersion:      templateCmdFlags.talosVersion,
-			WithSecrets:       templateCmdFlags.withSecrets,
-			Full:              templateCmdFlags.full,
-			Root:              Config.RootDir,
-			Offline:           templateCmdFlags.offline,
-			KubernetesVersion: templateCmdFlags.kubernetesVersion,
-			TemplateFiles:     templateCmdFlags.templateFiles,
-		}
-
-		if len(templateCmdFlags.templateFiles) < 1 {
-			return errors.New("templates are not set for the command: please use `--template` flag to set the templates to render manifest from")
-		}
-
-		result, err := engine.Render(ctx, c, opts)
+		output, err := generateOutput(ctx, c, args)
 		if err != nil {
-			return fmt.Errorf("failed to render templates: %w", err)
+			return err
 		}
 
-		// Use the GenerateModeline from the modeline package
-		modeline, err := modeline.GenerateModeline(GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
-		if err != nil {
-			return fmt.Errorf("failed to generate modeline: %w", err)
-		}
-
-		fmt.Printf("%s\n%s", modeline, string(result))
-
+		fmt.Println(output)
 		return nil
 	}
 }
 
+func templateUpdate(args []string) func(ctx context.Context, c *client.Client) error {
+	return func(ctx context.Context, c *client.Client) error {
+		templatesFromArgs := len(templateCmdFlags.templateFiles) > 0
+		nodesFromArgs := len(GlobalArgs.Nodes) > 0
+		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
+		for _, configFile := range templateCmdFlags.configFiles {
+			modelineConfig, err := modeline.ReadAndParseModeline(configFile)
+			if err != nil {
+				return fmt.Errorf("modeline parsing failed: %v\n", err)
+			}
+			if !templatesFromArgs {
+				if len(modelineConfig.Templates) == 0 {
+					return fmt.Errorf("modeline does not contain templates information")
+				} else {
+					templateCmdFlags.templateFiles = modelineConfig.Templates
+				}
+			}
+			if !nodesFromArgs {
+				GlobalArgs.Nodes = modelineConfig.Nodes
+			}
+			if !endpointsFromArgs {
+				GlobalArgs.Endpoints = modelineConfig.Endpoints
+			}
+
+			if len(GlobalArgs.Nodes) < 1 {
+				return errors.New("nodes are not set for the command: please use `--nodes` flag or configuration file to set the nodes to run the command against")
+			}
+
+			fmt.Printf("- talm: file=%s, nodes=%s, endpoints=%s, templates=%s\n", configFile, GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
+
+			template := func(args []string) func(ctx context.Context, c *client.Client) error {
+				return func(ctx context.Context, c *client.Client) error {
+					output, err := generateOutput(ctx, c, args)
+					if err != nil {
+						return err
+					}
+
+					err = os.WriteFile(configFile, []byte(output), 0o644)
+					fmt.Fprintf(os.Stderr, "Updated.\n")
+
+					return nil
+				}
+			}
+
+			if templateCmdFlags.offline {
+				err = template(args)(context.Background(), nil)
+			} else if templateCmdFlags.insecure {
+				err = WithClientMaintenance(nil, template(args))
+			} else {
+				err = WithClient(template(args))
+			}
+			if err != nil {
+				return err
+			}
+
+			// Reset args
+			if !templatesFromArgs {
+				templateCmdFlags.templateFiles = []string{}
+			}
+			if !nodesFromArgs {
+				GlobalArgs.Nodes = []string{}
+			}
+			if !endpointsFromArgs {
+				GlobalArgs.Endpoints = []string{}
+			}
+		}
+		return nil
+	}
+}
+
+func generateOutput(ctx context.Context, c *client.Client, args []string) (string, error) {
+	opts := engine.Options{
+		Insecure:          templateCmdFlags.insecure,
+		ValueFiles:        templateCmdFlags.valueFiles,
+		StringValues:      templateCmdFlags.stringValues,
+		Values:            templateCmdFlags.values,
+		FileValues:        templateCmdFlags.fileValues,
+		JsonValues:        templateCmdFlags.jsonValues,
+		LiteralValues:     templateCmdFlags.literalValues,
+		TalosVersion:      templateCmdFlags.talosVersion,
+		WithSecrets:       templateCmdFlags.withSecrets,
+		Full:              templateCmdFlags.full,
+		Root:              Config.RootDir,
+		Offline:           templateCmdFlags.offline,
+		KubernetesVersion: templateCmdFlags.kubernetesVersion,
+		TemplateFiles:     templateCmdFlags.templateFiles,
+	}
+
+	result, err := engine.Render(ctx, c, opts)
+	if err != nil {
+		return "", fmt.Errorf("failed to render templates: %w", err)
+	}
+
+	modeline, err := modeline.GenerateModeline(GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate modeline: %w", err)
+	}
+
+	output := fmt.Sprintf("%s\n%s", modeline, string(result))
+	return output, nil
+}
+
 func init() {
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.insecure, "insecure", "i", false, "template using the insecure (encrypted with no auth) maintenance service")
+	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.configFiles, "file", "f", nil, "specify config files for in-place update (can specify multiple)")
+	templateCmd.Flags().BoolVarP(&templateCmdFlags.inplace, "in-place", "I", false, "update generated files in place")
 	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.valueFiles, "values", "", []string{}, "specify values in a YAML file (can specify multiple)")
 	templateCmd.Flags().StringSliceVarP(&templateCmdFlags.templateFiles, "template", "t", []string{}, "specify templates to render manifest from (can specify multiple)")
 	templateCmd.Flags().StringArrayVar(&templateCmdFlags.values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")

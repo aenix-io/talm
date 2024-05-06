@@ -4,6 +4,33 @@ Manage Talos the GitOps Way!
 
 Talm is just like Helm, but for Talos Linux
 
+## Features
+
+While developing Talm, we aimed to achieve the following goals:
+
+- **Automatic Discovery**: In a bare-metal environment, each server may vary
+slightly in aspects such as disks and network interfaces.
+Talm enables discovery of node information, which is then used to generate patches.
+
+- **Ease of Customization**: You can customize templates to create your unique
+configuration based on your environment. The templates use the standard
+Go templates syntax, enhanced with widely-known Helm templating logic.
+
+- **GitOps Friendly**: The patches generated do not contain sensitive data,
+allowing them to be stored in Git in an unencrypted, open format. For scenarios
+requiring complete configurations, the `--full` option allows the obtain
+a complete config that can be used for matchbox and other solutions.
+
+- **Simplicity of Use**: You no longer need to pass connection options for each
+specific server; they are saved along with the templating results into
+a separate file. This allows you to easily apply one or multiple files in batch
+using a syntax similar to `kubectl apply -f node1.yaml -f node2.yaml`.
+
+- **Compatibility with talosctl**: We strive to maintain compatibility with the upstream
+project in patches and configurations. The configurations you obtain can be used
+with the official tools like talosctl and Omni.
+
+
 ## Installation
 
 Download binary from Github [releases page](https://github.com/aenix-io/talm/releases/latest)

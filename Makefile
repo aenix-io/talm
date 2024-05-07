@@ -1,13 +1,60 @@
 VERSION=$(shell git describe --tags)
 TALOS_VERSION=$(shell  go list -m github.com/siderolabs/talos | awk '{sub(/^v/, "", $$NF); print $$NF}')
 
-generate: update-dashboard
+generate:
 	go generate
 
 build:
 	go build -ldflags="-X 'main.Version=$(VERSION)'"
 
-update-dashboard:
-	rm -rf internal/pkg/dashboard internal/pkg/meta internal/app/machined/pkg/runtime
-	wget -O- https://github.com/siderolabs/talos/archive/refs/tags/v$(TALOS_VERSION).tar.gz | tar --strip=1 -xzf- talos-$(TALOS_VERSION)/internal/pkg/dashboard talos-$(TALOS_VERSION)/internal/pkg/meta talos-$(TALOS_VERSION)/internal/app/machined/pkg/runtime
-	sed -i 's|github.com/siderolabs/talos/internal|github.com/aenix-io/talm/internal|g' `grep -rl 'github.com/siderolabs/talos/internal' internal/pkg/dashboard internal/pkg/meta internal/app/machined/pkg/runtime`
+import: import-internal import-commands
+
+import-commands:
+	go run tools/import_commands.go --talos-version v$(TALOS_VERSION) \
+    bootstrap \
+    containers \
+    dashboard \
+    disks \
+    dmesg \
+    events \
+    get \
+    health \
+    image \
+    kubeconfig \
+    list \
+    logs \
+    memory \
+    mounts \
+    netstat \
+    pcap \
+    processes \
+    read \
+    reboot \
+    reset \
+    restart \
+    rollback \
+    service \
+    shutdown \
+    stats \
+    time \
+    version
+
+import-internal:
+	rm -rf internal
+	mkdir internal
+	wget -O- https://github.com/siderolabs/talos/archive/refs/tags/v$(TALOS_VERSION).tar.gz | tar --strip=1 -xzf- \
+		talos-$(TALOS_VERSION)/internal/pkg/meta \
+		talos-$(TALOS_VERSION)/internal/app/machined/ \
+		talos-$(TALOS_VERSION)/internal/pkg/cri \
+		talos-$(TALOS_VERSION)/internal/pkg/cgroup \
+		talos-$(TALOS_VERSION)/internal/pkg/dashboard \
+		talos-$(TALOS_VERSION)/internal/pkg/environment \
+		talos-$(TALOS_VERSION)/internal/pkg/etcd \
+		talos-$(TALOS_VERSION)/internal/pkg/install \
+		talos-$(TALOS_VERSION)/internal/pkg/logind \
+		talos-$(TALOS_VERSION)/internal/pkg/mount \
+		talos-$(TALOS_VERSION)/internal/pkg/partition \
+		talos-$(TALOS_VERSION)/internal/pkg/secureboot \
+		talos-$(TALOS_VERSION)/internal/pkg/smbios
+	sed -i 's|github.com/siderolabs/talos/internal|github.com/aenix-io/talm/internal|g' `grep -rl 'github.com/siderolabs/talos/internal' internal`
+

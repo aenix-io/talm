@@ -36,16 +36,20 @@ This command should not be used when "init" type node are used.
 
 Talos etcd cluster can be recovered from a known snapshot with '--recover-from=' flag.`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if len(bootstrapCmdFlags.configFiles) > 1 {
-			return fmt.Errorf("command \"bootstrap\" is not supported with multiple files")
+			return fmt.Errorf("command \"bootstrap\" is not supported with multiple --file")
 		}
 		nodesFromArgs := len(GlobalArgs.Nodes) > 0
 		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
-		if err := processModelineAndUpdateGlobals(bootstrapCmdFlags.configFiles[0], nodesFromArgs, endpointsFromArgs, true); err != nil {
-			return err
+		for _, configFile := range bootstrapCmdFlags.configFiles {
+			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs, true); err != nil {
+				return err
+			}
 		}
-
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
 			if len(GlobalArgs.Nodes) > 1 {
 				return fmt.Errorf("command \"bootstrap\" is not supported with multiple nodes")

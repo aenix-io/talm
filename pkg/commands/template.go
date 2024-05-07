@@ -42,6 +42,30 @@ var templateCmd = &cobra.Command{
 	Short: "Render templates locally and display the output",
 	Long:  ``,
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		templateCmdFlags.valueFiles = append(Config.TemplateOptions.ValueFiles, templateCmdFlags.valueFiles...)
+		templateCmdFlags.values = append(Config.TemplateOptions.Values, templateCmdFlags.values...)
+		templateCmdFlags.stringValues = append(Config.TemplateOptions.StringValues, templateCmdFlags.stringValues...)
+		templateCmdFlags.fileValues = append(Config.TemplateOptions.FileValues, templateCmdFlags.fileValues...)
+		templateCmdFlags.jsonValues = append(Config.TemplateOptions.JsonValues, templateCmdFlags.jsonValues...)
+		templateCmdFlags.literalValues = append(Config.TemplateOptions.LiteralValues, templateCmdFlags.literalValues...)
+		if !cmd.Flags().Changed("talos-version") {
+			templateCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
+		}
+		if !cmd.Flags().Changed("with-secrets") {
+			templateCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
+		}
+		if !cmd.Flags().Changed("kubernetes-version") {
+			templateCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
+		}
+		if !cmd.Flags().Changed("full") {
+			templateCmdFlags.full = Config.TemplateOptions.Full
+		}
+		if !cmd.Flags().Changed("offline") {
+			templateCmdFlags.offline = Config.TemplateOptions.Offline
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		templateFunc := template
 		if templateCmdFlags.inplace {
@@ -199,31 +223,6 @@ func init() {
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.full, "full", "", false, "show full resulting config, not only patch")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.offline, "offline", "", false, "disable gathering information and lookup functions")
 	templateCmd.Flags().StringVar(&templateCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
-
-	templateCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-		templateCmdFlags.valueFiles = append(Config.TemplateOptions.ValueFiles, templateCmdFlags.valueFiles...)
-		templateCmdFlags.values = append(Config.TemplateOptions.Values, templateCmdFlags.values...)
-		templateCmdFlags.stringValues = append(Config.TemplateOptions.StringValues, templateCmdFlags.stringValues...)
-		templateCmdFlags.fileValues = append(Config.TemplateOptions.FileValues, templateCmdFlags.fileValues...)
-		templateCmdFlags.jsonValues = append(Config.TemplateOptions.JsonValues, templateCmdFlags.jsonValues...)
-		templateCmdFlags.literalValues = append(Config.TemplateOptions.LiteralValues, templateCmdFlags.literalValues...)
-		if !cmd.Flags().Changed("talos-version") {
-			templateCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
-		}
-		if !cmd.Flags().Changed("with-secrets") {
-			templateCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
-		}
-		if !cmd.Flags().Changed("kubernetes-version") {
-			templateCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
-		}
-		if !cmd.Flags().Changed("full") {
-			templateCmdFlags.full = Config.TemplateOptions.Full
-		}
-		if !cmd.Flags().Changed("offline") {
-			templateCmdFlags.offline = Config.TemplateOptions.Offline
-		}
-		return nil
-	}
 
 	addCommand(templateCmd)
 }

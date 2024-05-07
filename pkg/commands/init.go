@@ -33,6 +33,12 @@ var initCmd = &cobra.Command{
 	Short: "Initialize a new project and generate default values",
 	Long:  ``,
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if !cmd.Flags().Changed("talos-version") {
+			initCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
 			secretsBundle   *secrets.Bundle
@@ -150,12 +156,6 @@ func init() {
 	initCmd.Flags().StringVarP(&initCmdFlags.preset, "preset", "p", "generic", "specify preset to generate files")
 	initCmd.Flags().BoolVar(&initCmdFlags.force, "force", false, "will overwrite existing files")
 
-	initCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-		if !cmd.Flags().Changed("talos-version") {
-			initCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
-		}
-		return nil
-	}
 	addCommand(initCmd)
 }
 

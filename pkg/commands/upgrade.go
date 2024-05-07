@@ -48,6 +48,28 @@ var upgradeCmd = &cobra.Command{
 	Short: "Upgrade Talos on the target node",
 	Long:  ``,
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if !cmd.Flags().Changed("talos-version") {
+			upgradeCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
+		}
+		if !cmd.Flags().Changed("with-secrets") {
+			upgradeCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
+		}
+		if !cmd.Flags().Changed("kubernetes-version") {
+			upgradeCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
+		}
+		if !cmd.Flags().Changed("preserve") {
+			upgradeCmdFlags.preserve = Config.UpgradeOptions.Preserve
+		}
+		if !cmd.Flags().Changed("stage") {
+			upgradeCmdFlags.stage = Config.UpgradeOptions.Stage
+		}
+		if !cmd.Flags().Changed("force") {
+			upgradeCmdFlags.force = Config.UpgradeOptions.Force
+		}
+		return nil
+	},
+
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if upgradeCmdFlags.debug {
 			upgradeCmdFlags.wait = true
@@ -223,28 +245,6 @@ func init() {
 	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
 	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 	upgradeCmd.Flags().StringVar(&upgradeCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
-
-	upgradeCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-		if !cmd.Flags().Changed("talos-version") {
-			upgradeCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
-		}
-		if !cmd.Flags().Changed("with-secrets") {
-			upgradeCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
-		}
-		if !cmd.Flags().Changed("kubernetes-version") {
-			upgradeCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
-		}
-		if !cmd.Flags().Changed("preserve") {
-			upgradeCmdFlags.preserve = Config.UpgradeOptions.Preserve
-		}
-		if !cmd.Flags().Changed("stage") {
-			upgradeCmdFlags.stage = Config.UpgradeOptions.Stage
-		}
-		if !cmd.Flags().Changed("force") {
-			upgradeCmdFlags.force = Config.UpgradeOptions.Force
-		}
-		return nil
-	}
 
 	addCommand(upgradeCmd)
 }

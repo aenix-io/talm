@@ -42,6 +42,27 @@ var applyCmd = &cobra.Command{
 	Short: "Apply config to a Talos node",
 	Long:  ``,
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if !cmd.Flags().Changed("talos-version") {
+			applyCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
+		}
+		if !cmd.Flags().Changed("with-secrets") {
+			applyCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
+		}
+		if !cmd.Flags().Changed("kubernetes-version") {
+			applyCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
+		}
+		if !cmd.Flags().Changed("preserve") {
+			applyCmdFlags.preserve = Config.UpgradeOptions.Preserve
+		}
+		if !cmd.Flags().Changed("stage") {
+			applyCmdFlags.stage = Config.UpgradeOptions.Stage
+		}
+		if !cmd.Flags().Changed("force") {
+			applyCmdFlags.force = Config.UpgradeOptions.Force
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if applyCmdFlags.insecure {
 			return WithClientMaintenance(nil, apply(args))
@@ -171,28 +192,6 @@ func init() {
 	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", nil, "list of server certificate fingeprints to accept (defaults to no check)")
 	applyCmd.Flags().BoolVar(&applyCmdFlags.force, "force", false, "will overwrite existing files")
 	helpers.AddModeFlags(&applyCmdFlags.Mode, applyCmd)
-
-	applyCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-		if !cmd.Flags().Changed("talos-version") {
-			applyCmdFlags.talosVersion = Config.TemplateOptions.TalosVersion
-		}
-		if !cmd.Flags().Changed("with-secrets") {
-			applyCmdFlags.withSecrets = Config.TemplateOptions.WithSecrets
-		}
-		if !cmd.Flags().Changed("kubernetes-version") {
-			applyCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
-		}
-		if !cmd.Flags().Changed("preserve") {
-			applyCmdFlags.preserve = Config.UpgradeOptions.Preserve
-		}
-		if !cmd.Flags().Changed("stage") {
-			applyCmdFlags.stage = Config.UpgradeOptions.Stage
-		}
-		if !cmd.Flags().Changed("force") {
-			applyCmdFlags.force = Config.UpgradeOptions.Force
-		}
-		return nil
-	}
 
 	addCommand(applyCmd)
 }

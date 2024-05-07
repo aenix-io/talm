@@ -101,7 +101,7 @@ func addCommand(cmd *cobra.Command) {
 	Commands = append(Commands, cmd)
 }
 
-func processModelineAndUpdateGlobals(configFile string, nodesFromArgs bool, endpointsFromArgs bool) error {
+func processModelineAndUpdateGlobals(configFile string, nodesFromArgs bool, endpointsFromArgs bool, owerwrite bool) error {
 	modelineConfig, err := modeline.ReadAndParseModeline(configFile)
 	if err != nil {
 		fmt.Printf("Warning: modeline parsing failed: %v\n", err)
@@ -111,10 +111,18 @@ func processModelineAndUpdateGlobals(configFile string, nodesFromArgs bool, endp
 	// Update global settings if modeline was successfully parsed
 	if modelineConfig != nil {
 		if !nodesFromArgs && len(modelineConfig.Nodes) > 0 {
-			GlobalArgs.Nodes = modelineConfig.Nodes
+			if owerwrite {
+				GlobalArgs.Nodes = modelineConfig.Nodes
+			} else {
+				GlobalArgs.Nodes = append(GlobalArgs.Nodes, modelineConfig.Nodes...)
+			}
 		}
 		if !endpointsFromArgs && len(modelineConfig.Endpoints) > 0 {
-			GlobalArgs.Endpoints = modelineConfig.Endpoints
+			if owerwrite {
+				GlobalArgs.Endpoints = modelineConfig.Endpoints
+			} else {
+				GlobalArgs.Endpoints = append(GlobalArgs.Endpoints, modelineConfig.Endpoints...)
+			}
 		}
 	}
 

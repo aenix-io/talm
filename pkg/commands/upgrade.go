@@ -76,7 +76,7 @@ func upgrade(args []string) func(ctx context.Context, c *client.Client) error {
 		}
 
 		for _, configFile := range upgradeCmdFlags.configFiles {
-			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs); err != nil {
+			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs, true); err != nil {
 				return err
 			}
 

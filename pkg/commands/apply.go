@@ -56,7 +56,7 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 		nodesFromArgs := len(GlobalArgs.Nodes) > 0
 		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
 		for _, configFile := range applyCmdFlags.configFiles {
-			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs); err != nil {
+			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs, true); err != nil {
 				return err
 			}
 

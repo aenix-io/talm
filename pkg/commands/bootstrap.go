@@ -42,7 +42,7 @@ Talos etcd cluster can be recovered from a known snapshot with '--recover-from='
 		}
 		nodesFromArgs := len(GlobalArgs.Nodes) > 0
 		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
-		if err := processModelineAndUpdateGlobals(bootstrapCmdFlags.configFiles[0], nodesFromArgs, endpointsFromArgs); err != nil {
+		if err := processModelineAndUpdateGlobals(bootstrapCmdFlags.configFiles[0], nodesFromArgs, endpointsFromArgs, true); err != nil {
 			return err
 		}
 
@@ -88,7 +88,7 @@ Talos etcd cluster can be recovered from a known snapshot with '--recover-from='
 }
 
 func init() {
-	bootstrapCmd.Flags().StringSliceVarP(&bootstrapCmdFlags.configFiles, "file", "f", nil, "specify config files or patches in a YAML file (can specify multiple)")
+	bootstrapCmd.Flags().StringSliceVarP(&bootstrapCmdFlags.configFiles, "file", "f", nil, "specify config file or patch in a YAML file")
 	bootstrapCmd.Flags().StringVar(&bootstrapCmdFlags.recoverFrom, "recover-from", "", "recover etcd cluster from the snapshot")
 	bootstrapCmd.Flags().BoolVar(&bootstrapCmdFlags.recoverSkipHashCheck, "recover-skip-hash-check", false, "skip integrity check when recovering etcd (use when recovering from data directory copy)")
 	addCommand(bootstrapCmd)

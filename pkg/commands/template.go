@@ -68,17 +68,10 @@ var templateCmd = &cobra.Command{
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		templateFunc := template
-		if templateCmdFlags.inplace {
-			templateFunc = templateUpdate
+		if len(templateCmdFlags.configFiles) > 0 {
+			templateFunc = templateWithFiles
 			if len(templateCmdFlags.configFiles) == 0 {
 				return fmt.Errorf("cannot use --in-place without --file")
-			}
-		} else {
-			if len(templateCmdFlags.configFiles) != 0 {
-				return fmt.Errorf("cannot use --file without --in-place")
-			}
-			if len(templateCmdFlags.templateFiles) < 1 {
-				return errors.New("templates are not set for the command: please use `--template` flag to set the templates to render manifest from")
 			}
 		}
 
@@ -105,11 +98,12 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 	}
 }
 
-func templateUpdate(args []string) func(ctx context.Context, c *client.Client) error {
+func templateWithFiles(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
 		templatesFromArgs := len(templateCmdFlags.templateFiles) > 0
 		nodesFromArgs := len(GlobalArgs.Nodes) > 0
 		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
+		firstFileProcessed := false
 		for _, configFile := range templateCmdFlags.configFiles {
 			modelineConfig, err := modeline.ReadAndParseModeline(configFile)
 			if err != nil {
@@ -132,8 +126,9 @@ func templateUpdate(args []string) func(ctx context.Context, c *client.Client) e
 			if len(GlobalArgs.Nodes) < 1 {
 				return errors.New("nodes are not set for the command: please use `--nodes` flag or configuration file to set the nodes to run the command against")
 			}
-
-			fmt.Printf("- talm: file=%s, nodes=%s, endpoints=%s, templates=%s\n", configFile, GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
+			if len(templateCmdFlags.configFiles) != 0 && len(templateCmdFlags.templateFiles) < 1 {
+				return errors.New("templates are not set for the command: please use `--template` flag to set the templates to render manifest from")
+			}
 
 			template := func(args []string) func(ctx context.Context, c *client.Client) error {
 				return func(ctx context.Context, c *client.Client) error {
@@ -142,8 +137,16 @@ func templateUpdate(args []string) func(ctx context.Context, c *client.Client) e
 						return err
 					}
 
-					err = os.WriteFile(configFile, []byte(output), 0o644)
-					fmt.Fprintf(os.Stderr, "Updated.\n")
+					if templateCmdFlags.inplace {
+						fmt.Printf("- talm: file=%s, nodes=%s, endpoints=%s, templates=%s\n", configFile, GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
+						err = os.WriteFile(configFile, []byte(output), 0o644)
+						fmt.Fprintf(os.Stderr, "Updated.\n")
+					} else {
+						if firstFileProcessed {
+							fmt.Println("---")
+						}
+						fmt.Printf("%s", output)
+					}
 
 					return nil
 				}
@@ -161,6 +164,7 @@ func templateUpdate(args []string) func(ctx context.Context, c *client.Client) e
 			}
 
 			// Reset args
+			firstFileProcessed = true
 			if !templatesFromArgs {
 				templateCmdFlags.templateFiles = []string{}
 			}

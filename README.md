@@ -127,6 +127,17 @@ Re-template and update generated file in place (this will overwrite it):
 talm template -f nodes/node1.yaml -I
 ```
 
+## Using talosctl commands
+
+Talm offers a similar set of commands to those provided by talosctl.
+However, you can specify the --file option for them.
+
+For example, to run a dashboard for three nodes:
+
+```
+talm dashboard -f node1.yaml -f node2.yaml -f node3.yaml
+```
+
 ## Customization
 
 You're free to edit template files in `./templates` directory.

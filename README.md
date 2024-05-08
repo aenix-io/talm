@@ -168,7 +168,7 @@ Querying disks map example:
 
 ## Encryption
 
-Currently, Talm does not have built-in encryption support, but you can transparently encrypt your secrets using the [git-encrypt](https://github.com/AGWA/git-crypt) extension.
+Currently, Talm does not have built-in encryption support, but you can transparently encrypt your secrets using the [git-crypt](https://github.com/AGWA/git-crypt) extension.
 
 Example `.gitattributes` file:
 

@@ -57,7 +57,7 @@ Gather node information:
 talm -n 1.2.3.4 -e 1.2.3.4 template -t templates/controlplane.yaml -i > nodes/node1.yaml
 ```
 
-Edit `templates/node1.yaml` file:
+Edit `nodes/node1.yaml` file:
 ```yaml
 # talm: nodes=["1.2.3.4"], endpoints=["1.2.3.4"], templates=["templates/controlplane.yaml"]
 machine:

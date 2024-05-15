@@ -19,11 +19,13 @@
 {{- define "talm.discovered.disks_info" }}
 # -- Discovered disks:
 {{- range .Disks }}
+{{- if not (regexMatch "^/dev/(zd)" .device_name) }}
 # {{ .device_name }}:
 #    model: {{ .model }}
 #    serial: {{ .serial }}
 #    wwid: {{ .wwid }}
 #    size: {{ include "talm.human_size" .size }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -65,7 +67,7 @@
 {{- define "talm.discovered.physical_links_info" }}
 # -- Discovered interfaces:
 {{- range (lookup "links" "" "").items }}
-{{- if regexMatch "^(eno|eth|enp|enx|ens)" .metadata.id }}
+{{- if and .spec.busPath (regexMatch "^(eno|eth|enp|enx|ens)" .metadata.id) }}
 # enx{{ .spec.hardwareAddr | replace ":" "" }}:
 #   id: {{ .metadata.id }}
 #   hardwareAddr:{{ .spec.hardwareAddr }}

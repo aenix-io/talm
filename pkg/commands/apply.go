@@ -64,10 +64,6 @@ var applyCmd = &cobra.Command{
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if applyCmdFlags.insecure {
-			return WithClientMaintenance(nil, apply(args))
-		}
-
 		return WithClientNoNodes(apply(args))
 	},
 }

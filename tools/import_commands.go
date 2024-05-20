@@ -214,6 +214,15 @@ func processFile(filename, cmdName string) {
 		}
 	}
 
+	if cmdName == "etcd" {
+		for _, subCmdName := range []string{"etcdAlarmListCmd", "etcdAlarmDisarmCmd"} {
+			initCode = fmt.Sprintf("%s\n%s", initCode, fmt.Sprintf(`
+	%s.Flags().StringSliceVarP(&etcdCmdFlags.configFiles, "file", "f", nil, "specify config files or patches in a YAML file (can specify multiple)")
+	%s.PreRunE = etcdCmd.PreRunE
+		`, subCmdName, subCmdName))
+		}
+	}
+
 	insertInitCode(node, cmdName, initCode)
 
 	var buf bytes.Buffer

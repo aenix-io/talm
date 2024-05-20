@@ -79,6 +79,7 @@ cluster:
   network:
     cni:
       name: none
+    dnsDomain: {{ .Values.clusterDomain }}
     podSubnets:
       {{- toYaml .Values.podSubnets | nindent 6 }}
     serviceSubnets:
@@ -114,6 +115,7 @@ cluster:
 {{- include "talos.config" . }}
 `,
 	"cozystack/values.yaml": `endpoint: "https://192.168.100.10:6443"
+clusterDomain: cozy.local
 floatingIP: 192.168.100.10
 image: "ghcr.io/aenix-io/cozystack/talos:v1.7.1"
 podSubnets:

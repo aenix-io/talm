@@ -49,6 +49,7 @@ cluster:
   network:
     cni:
       name: none
+    dnsDomain: {{ .Values.clusterDomain }}
     podSubnets:
       {{- toYaml .Values.podSubnets | nindent 6 }}
     serviceSubnets:

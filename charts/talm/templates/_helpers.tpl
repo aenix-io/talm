@@ -58,7 +58,9 @@
 {{- $addresses := list }}
 {{- range (lookup "addresses" "" "").items }}
 {{- if and (eq .spec.linkName $linkName) (eq .spec.family $family) (not (eq .spec.scope "host")) }}
+{{- if not (hasPrefix (printf "%s/" $.Values.floatingIP) .spec.address) }}
 {{- $addresses = append $addresses .spec.address }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- toJson $addresses }}

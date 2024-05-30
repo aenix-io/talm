@@ -215,11 +215,16 @@ version: %s
 description: A library Talm chart for Talos Linux
 `,
 	"talm/templates/_helpers.tpl": `{{- define "talm.discovered.system_disk_name" }}
+{{- $disk := "" }}
 {{- range .Disks }}
+{{- if eq $disk "" }}
+{{- $disk = .device_name }}
+{{- end }}
 {{- if .system_disk }}
-{{- .device_name }}
+{{- $disk = .device_name }}
 {{- end }}
 {{- end }}
+{{- $disk }}
 {{- end }}
 
 {{- define "talm.discovered.machinetype" }}

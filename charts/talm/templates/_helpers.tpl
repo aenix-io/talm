@@ -124,6 +124,7 @@
 {{- with (lookup "links" "" .spec.outLinkName) }}
 hardwareAddr: {{ .spec.hardwareAddr }}
 driver: {{ .spec.driver }}
+{{- break }}
 {{- end }}
 {{- end }}
 {{- end }}

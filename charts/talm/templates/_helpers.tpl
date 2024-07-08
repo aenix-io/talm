@@ -136,8 +136,9 @@ driver: {{ .spec.driver }}
 
 {{- define "talm.discovered.default_gateway" }}
 {{- range (lookup "routes" "" "").items }}
-{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) (eq .spec.table "main") }}
 {{- .spec.gateway }}
+{{- break }}
 {{- end }}
 {{- end }}
 {{- end }}

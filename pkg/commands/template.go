@@ -35,6 +35,9 @@ var templateCmdFlags struct {
 	offline           bool
 	kubernetesVersion string
 	inplace           bool
+	nodesFromArgs     bool
+	endpointsFromArgs bool
+	templatesFromArgs bool
 }
 
 var templateCmd = &cobra.Command{
@@ -64,6 +67,14 @@ var templateCmd = &cobra.Command{
 		if !cmd.Flags().Changed("offline") {
 			templateCmdFlags.offline = Config.TemplateOptions.Offline
 		}
+		templateCmdFlags.templatesFromArgs = len(templateCmdFlags.templateFiles) > 0
+		templateCmdFlags.nodesFromArgs = len(GlobalArgs.Nodes) > 0
+		templateCmdFlags.endpointsFromArgs = len(GlobalArgs.Endpoints) > 0
+		// Set dummy endpoint to avoid errors on building clinet
+		if len(GlobalArgs.Endpoints) == 0 {
+			GlobalArgs.Endpoints = append(GlobalArgs.Endpoints, "127.0.0.1")
+		}
+
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -100,28 +111,26 @@ func template(args []string) func(ctx context.Context, c *client.Client) error {
 
 func templateWithFiles(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
-		templatesFromArgs := len(templateCmdFlags.templateFiles) > 0
-		nodesFromArgs := len(GlobalArgs.Nodes) > 0
-		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
 		firstFileProcessed := false
 		for _, configFile := range templateCmdFlags.configFiles {
 			modelineConfig, err := modeline.ReadAndParseModeline(configFile)
 			if err != nil {
 				return fmt.Errorf("modeline parsing failed: %v\n", err)
 			}
-			if !templatesFromArgs {
+			if !templateCmdFlags.templatesFromArgs {
 				if len(modelineConfig.Templates) == 0 {
 					return fmt.Errorf("modeline does not contain templates information")
 				} else {
 					templateCmdFlags.templateFiles = modelineConfig.Templates
 				}
 			}
-			if !nodesFromArgs {
+			if !templateCmdFlags.nodesFromArgs {
 				GlobalArgs.Nodes = modelineConfig.Nodes
 			}
-			if !endpointsFromArgs {
+			if !templateCmdFlags.endpointsFromArgs {
 				GlobalArgs.Endpoints = modelineConfig.Endpoints
 			}
+			fmt.Printf("nodes: %v, endpoints: %v, templates: %v", GlobalArgs.Nodes, GlobalArgs.Endpoints, templateCmdFlags.templateFiles)
 
 			if len(GlobalArgs.Nodes) < 1 {
 				return errors.New("nodes are not set for the command: please use `--nodes` flag or configuration file to set the nodes to run the command against")
@@ -165,13 +174,13 @@ func templateWithFiles(args []string) func(ctx context.Context, c *client.Client
 
 			// Reset args
 			firstFileProcessed = true
-			if !templatesFromArgs {
+			if !templateCmdFlags.templatesFromArgs {
 				templateCmdFlags.templateFiles = []string{}
 			}
-			if !nodesFromArgs {
+			if !templateCmdFlags.nodesFromArgs {
 				GlobalArgs.Nodes = []string{}
 			}
-			if !endpointsFromArgs {
+			if !templateCmdFlags.endpointsFromArgs {
 				GlobalArgs.Endpoints = []string{}
 			}
 		}

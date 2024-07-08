@@ -35,6 +35,8 @@ var applyCmdFlags struct {
 	stage             bool
 	force             bool
 	configTryTimeout  time.Duration
+	nodesFromArgs     bool
+	endpointsFromArgs bool
 }
 
 var applyCmd = &cobra.Command{
@@ -61,6 +63,13 @@ var applyCmd = &cobra.Command{
 		if !cmd.Flags().Changed("force") {
 			applyCmdFlags.force = Config.UpgradeOptions.Force
 		}
+		applyCmdFlags.nodesFromArgs = len(GlobalArgs.Nodes) > 0
+		applyCmdFlags.endpointsFromArgs = len(GlobalArgs.Endpoints) > 0
+		// Set dummy endpoint to avoid errors on building clinet
+		if len(GlobalArgs.Endpoints) == 0 {
+			GlobalArgs.Endpoints = append(GlobalArgs.Endpoints, "127.0.0.1")
+		}
+
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -70,10 +79,8 @@ var applyCmd = &cobra.Command{
 
 func apply(args []string) func(ctx context.Context, c *client.Client) error {
 	return func(ctx context.Context, c *client.Client) error {
-		nodesFromArgs := len(GlobalArgs.Nodes) > 0
-		endpointsFromArgs := len(GlobalArgs.Endpoints) > 0
 		for _, configFile := range applyCmdFlags.configFiles {
-			if err := processModelineAndUpdateGlobals(configFile, nodesFromArgs, endpointsFromArgs, true); err != nil {
+			if err := processModelineAndUpdateGlobals(configFile, applyCmdFlags.nodesFromArgs, applyCmdFlags.endpointsFromArgs, true); err != nil {
 				return err
 			}
 
@@ -138,10 +145,10 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 			}
 
 			// Reset args
-			if !nodesFromArgs {
+			if !applyCmdFlags.nodesFromArgs {
 				GlobalArgs.Nodes = []string{}
 			}
-			if !endpointsFromArgs {
+			if !applyCmdFlags.endpointsFromArgs {
 				GlobalArgs.Endpoints = []string{}
 			}
 		}

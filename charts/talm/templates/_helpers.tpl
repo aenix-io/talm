@@ -122,8 +122,7 @@
 {{- range (lookup "routes" "" "").items }}
 {{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
 {{- with (lookup "links" "" .spec.outLinkName) }}
-hardwareAddr: {{ .spec.hardwareAddr }}
-driver: {{ .spec.driver }}
+busPath: {{ .spec.busPath }}
 {{- break }}
 {{- end }}
 {{- end }}

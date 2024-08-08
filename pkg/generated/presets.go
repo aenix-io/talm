@@ -28,6 +28,9 @@ upgradeOptions:
   stage: false
   force: false
 `,
+	"cozystack/talosconfig": `context: ""
+contexts: {}
+`,
 	"cozystack/templates/_helpers.tpl": `{{- define "talos.config" }}
 machine:
   type: {{ .MachineType }}
@@ -338,8 +341,7 @@ description: A library Talm chart for Talos Linux
 {{- range (lookup "routes" "" "").items }}
 {{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
 {{- with (lookup "links" "" .spec.outLinkName) }}
-hardwareAddr: {{ .spec.hardwareAddr }}
-driver: {{ .spec.driver }}
+busPath: {{ .spec.busPath }}
 {{- break }}
 {{- end }}
 {{- end }}

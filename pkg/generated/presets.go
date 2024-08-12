@@ -28,9 +28,6 @@ upgradeOptions:
   stage: false
   force: false
 `,
-	"cozystack/talosconfig": `context: ""
-contexts: {}
-`,
 	"cozystack/templates/_helpers.tpl": `{{- define "talos.config" }}
 machine:
   type: {{ .MachineType }}

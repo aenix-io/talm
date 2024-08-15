@@ -55,7 +55,7 @@
 {{- $linkName := "" }}
 {{- $family := "" }}
 {{- range (lookup "routes" "" "").items }}
-{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) }}
+{{- if and (eq .spec.dst "") (not (eq .spec.gateway "")) (eq .spec.table "main") }}
 {{- $linkName = .spec.outLinkName }}
 {{- $family = .spec.family }}
 {{- end }}

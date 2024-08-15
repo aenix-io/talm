@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/netip"
 	"slices"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/cache"
+	"github.com/coredns/coredns/plugin/pkg/dnsutil"
 	"github.com/coredns/coredns/plugin/pkg/proxy"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
@@ -37,7 +37,11 @@ type Cache struct {
 
 // NewCache creates a new Cache.
 func NewCache(next plugin.Handler, l *zap.Logger) *Cache {
-	c := cache.NewCache("zones", "view")
+	c := cache.NewCache(
+		"zones",
+		"view",
+		cache.WithNegativeTTL(10*time.Second, dnsutil.MinimalDefaultTTL),
+	)
 	c.Next = next
 
 	return &Cache{cache: c, logger: l}
@@ -45,10 +49,41 @@ func NewCache(next plugin.Handler, l *zap.Logger) *Cache {
 
 // ServeDNS implements [dns.Handler].
 func (c *Cache) ServeDNS(wr dns.ResponseWriter, msg *dns.Msg) {
-	_, err := c.cache.ServeDNS(context.Background(), wr, msg)
+	wr = request.NewScrubWriter(msg, wr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4500*time.Millisecond)
+	defer cancel()
+
+	code, err := c.cache.ServeDNS(ctx, wr, msg)
 	if err != nil {
 		// we should probably call newProxy.Healthcheck() if there are too many errors
 		c.logger.Warn("error serving dns request", zap.Error(err))
+	}
+
+	if clientWrite(code) {
+		return
+	}
+
+	// Something went wrong
+	state := request.Request{W: wr, Req: msg}
+
+	answer := new(dns.Msg)
+	answer.SetRcode(msg, code)
+	state.SizeAndDo(answer)
+
+	err = wr.WriteMsg(answer)
+	if err != nil {
+		c.logger.Warn("error writing dns response", zap.Error(err))
+	}
+}
+
+// clientWrite returns true if the response has been written to the client.
+func clientWrite(rcode int) bool {
+	switch rcode {
+	case dns.RcodeServerFailure, dns.RcodeRefused, dns.RcodeFormatError, dns.RcodeNotImplemented:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -72,6 +107,8 @@ func (h *Handler) Name() string {
 }
 
 // ServeDNS implements plugin.Handler.
+//
+//nolint:gocyclo
 func (h *Handler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg *dns.Msg) (int, error) {
 	h.mx.RLock()
 	defer h.mx.RUnlock()
@@ -80,53 +117,47 @@ func (h *Handler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg *dns
 
 	h.logger.Debug("dns request", zap.Stringer("data", msg))
 
-	upstreams := slices.Clone(h.dests)
-
-	if len(upstreams) == 0 {
-		emptyProxyErr := new(dns.Msg).SetRcode(req.Req, dns.RcodeServerFailure)
-
-		err := wrt.WriteMsg(emptyProxyErr)
-		if err != nil {
-			// We can't do much here, but at least log the error.
-			h.logger.Warn("failed to write 'no destination available' error dns response", zap.Error(err))
-		}
-
+	if len(h.dests) == 0 {
 		return dns.RcodeServerFailure, errors.New("no destination available")
 	}
-
-	rand.Shuffle(len(upstreams), func(i, j int) { upstreams[i], upstreams[j] = upstreams[j], upstreams[i] })
 
 	var (
 		resp *dns.Msg
 		err  error
 	)
 
-	for _, ups := range upstreams {
-		resp, err = ups.Connect(ctx, req, proxy.Options{})
-		if errors.Is(err, proxy.ErrCachedClosed) { // Remote side closed conn, can only happen with TCP.
-			continue
+	for _, ups := range h.dests {
+		opts := proxy.Options{}
+
+		for {
+			resp, err = ups.Connect(ctx, req, opts)
+
+			switch {
+			case errors.Is(err, proxy.ErrCachedClosed): // Remote side closed conn, can only happen with TCP.
+				continue
+			case resp != nil && resp.Truncated && !opts.ForceTCP: // Retry with TCP if truncated
+				opts.ForceTCP = true
+
+				continue
+			}
+
+			break
 		}
 
-		if err == nil {
+		if ctx.Err() != nil || err == nil {
 			break
 		}
 
 		continue
 	}
 
-	if err != nil {
+	if ctx.Err() != nil {
+		return dns.RcodeServerFailure, ctx.Err()
+	} else if err != nil {
 		return dns.RcodeServerFailure, err
 	}
 
 	if !req.Match(resp) {
-		resp = new(dns.Msg).SetRcode(req.Req, dns.RcodeFormatError)
-
-		err = wrt.WriteMsg(resp)
-		if err != nil {
-			// We can't do much here, but at least log the error.
-			h.logger.Warn("failed to write non-matched response", zap.Error(err))
-		}
-
 		h.logger.Warn("dns response didn't match", zap.Stringer("data", resp))
 
 		return dns.RcodeFormatError, nil
@@ -274,6 +305,7 @@ func NewServer(opts ServerOptions) *Server {
 			Listener:      opts.Listener,
 			PacketConn:    opts.PacketConn,
 			Handler:       opts.Handler,
+			UDPSize:       dns.DefaultMsgSize, // 4096 since default is [dns.MinMsgSize] = 512 bytes, which is too small.
 			ReadTimeout:   opts.ReadTimeout,
 			WriteTimeout:  opts.WriteTimeout,
 			IdleTimeout:   opts.IdleTimeout,
@@ -338,88 +370,76 @@ func (s *Server) Start(onDone func(err error)) (stop func(), stopped <-chan stru
 }
 
 // NewTCPListener creates a new TCP listener.
-func NewTCPListener(network, addr string) (net.Listener, error) {
-	var opts []controlOptions
-
-	switch network {
-	case "tcp", "tcp4":
-		network = "tcp4"
-		opts = tcpOptions
-
-	case "tcp6":
-		opts = tcpOptionsV6
-
-	default:
+func NewTCPListener(network, addr string, control ControlFn) (net.Listener, error) {
+	network, ok := networkNames[network]
+	if !ok {
 		return nil, fmt.Errorf("unsupported network: %s", network)
 	}
 
-	lc := net.ListenConfig{Control: makeControl(opts)}
+	lc := net.ListenConfig{Control: control}
 
 	return lc.Listen(context.Background(), network, addr)
 }
 
 // NewUDPPacketConn creates a new UDP packet connection.
-func NewUDPPacketConn(network, addr string) (net.PacketConn, error) {
-	var opts []controlOptions
-
-	switch network {
-	case "udp", "udp4":
-		network = "udp4"
-		opts = udpOptions
-
-	case "udp6":
-		opts = udpOptionsV6
-
-	default:
+func NewUDPPacketConn(network, addr string, control ControlFn) (net.PacketConn, error) {
+	network, ok := networkNames[network]
+	if !ok {
 		return nil, fmt.Errorf("unsupported network: %s", network)
 	}
 
-	lc := net.ListenConfig{
-		Control: makeControl(opts),
-	}
+	lc := net.ListenConfig{Control: control}
 
 	return lc.ListenPacket(context.Background(), network, addr)
 }
 
-var (
-	tcpOptions = []controlOptions{
-		{unix.IPPROTO_IP, unix.IP_RECVTTL, 1, "failed to set IP_RECVTTL"},
-		{unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 5, "failed to set TCP_FASTOPEN"}, // tcp specific stuff from systemd
-		{unix.IPPROTO_TCP, unix.TCP_NODELAY, 1, "failed to set TCP_NODELAY"},   // tcp specific stuff from systemd
-		{unix.IPPROTO_IP, unix.IP_TTL, 1, "failed to set IP_TTL"},
+// ControlFn is an alias to [net.ListenConfig.Control] function.
+type ControlFn = func(string, string, syscall.RawConn) error
+
+// MakeControl creates a control function for setting socket options.
+func MakeControl(network string, forwardEnabled bool) (ControlFn, error) {
+	maxHops := 1
+
+	if forwardEnabled {
+		maxHops = 2
 	}
 
-	tcpOptionsV6 = []controlOptions{
-		{unix.IPPROTO_IPV6, unix.IPV6_RECVHOPLIMIT, 1, "failed to set IPV6_RECVHOPLIMIT"},
-		{unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 5, "failed to set TCP_FASTOPEN"}, // tcp specific stuff from systemd
-		{unix.IPPROTO_TCP, unix.TCP_NODELAY, 1, "failed to set TCP_NODELAY"},   // tcp specific stuff from systemd
-		{unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS, 1, "failed to set IPV6_UNICAST_HOPS"},
+	var options []controlOptions
+
+	switch network {
+	case "tcp", "tcp4":
+		options = []controlOptions{
+			{unix.IPPROTO_IP, unix.IP_RECVTTL, maxHops, "failed to set IP_RECVTTL"},
+			{unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 5, "failed to set TCP_FASTOPEN"}, // tcp specific stuff from systemd
+			{unix.IPPROTO_TCP, unix.TCP_NODELAY, 1, "failed to set TCP_NODELAY"},   // tcp specific stuff from systemd
+			{unix.IPPROTO_IP, unix.IP_TTL, maxHops, "failed to set IP_TTL"},
+		}
+	case "tcp6":
+		options = []controlOptions{
+			{unix.IPPROTO_IPV6, unix.IPV6_RECVHOPLIMIT, maxHops, "failed to set IPV6_RECVHOPLIMIT"},
+			{unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 5, "failed to set TCP_FASTOPEN"}, // tcp specific stuff from systemd
+			{unix.IPPROTO_TCP, unix.TCP_NODELAY, 1, "failed to set TCP_NODELAY"},   // tcp specific stuff from systemd
+			{unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS, maxHops, "failed to set IPV6_UNICAST_HOPS"},
+		}
+	case "udp", "udp4":
+		options = []controlOptions{
+			{unix.IPPROTO_IP, unix.IP_RECVTTL, maxHops, "failed to set IP_RECVTTL"},
+			{unix.IPPROTO_IP, unix.IP_TTL, maxHops, "failed to set IP_TTL"},
+		}
+	case "udp6":
+		options = []controlOptions{
+			{unix.IPPROTO_IPV6, unix.IPV6_RECVHOPLIMIT, maxHops, "failed to set IPV6_RECVHOPLIMIT"},
+			{unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS, maxHops, "failed to set IPV6_UNICAST_HOPS"},
+		}
+	default:
+		return nil, fmt.Errorf("unsupported network: %s", network)
 	}
 
-	udpOptions = []controlOptions{
-		{unix.IPPROTO_IP, unix.IP_RECVTTL, 1, "failed to set IP_RECVTTL"},
-		{unix.IPPROTO_IP, unix.IP_TTL, 1, "failed to set IP_TTL"},
-	}
-
-	udpOptionsV6 = []controlOptions{
-		{unix.IPPROTO_IPV6, unix.IPV6_RECVHOPLIMIT, 1, "failed to set IPV6_RECVHOPLIMIT"},
-		{unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS, 1, "failed to set IPV6_UNICAST_HOPS"},
-	}
-)
-
-type controlOptions struct {
-	level        int
-	opt          int
-	val          int
-	errorMessage string
-}
-
-func makeControl(opts []controlOptions) func(string, string, syscall.RawConn) error {
 	return func(_ string, _ string, c syscall.RawConn) error {
 		var resErr error
 
 		err := c.Control(func(fd uintptr) {
-			for _, opt := range opts {
+			for _, opt := range options {
 				opErr := unix.SetsockoptInt(int(fd), opt.level, opt.opt, opt.val)
 				if opErr != nil {
 					resErr = fmt.Errorf(opt.errorMessage+": %w", opErr)
@@ -437,5 +457,21 @@ func makeControl(opts []controlOptions) func(string, string, syscall.RawConn) er
 		}
 
 		return nil
-	}
+	}, nil
+}
+
+type controlOptions struct {
+	level        int
+	opt          int
+	val          int
+	errorMessage string
+}
+
+var networkNames = map[string]string{
+	"tcp":  "tcp4",
+	"tcp4": "tcp4",
+	"tcp6": "tcp6",
+	"udp":  "udp4",
+	"udp4": "udp4",
+	"udp6": "udp6",
 }

@@ -25,6 +25,7 @@ var initCmdFlags struct {
 	force        bool
 	preset       string
 	talosVersion string
+	update       bool
 }
 
 // initCmd represents the `init` command.
@@ -46,6 +47,9 @@ var initCmd = &cobra.Command{
 			err             error
 		)
 
+		if initCmdFlags.update {
+			return updateTalmLibraryChart()
+		}
 		if initCmdFlags.talosVersion != "" {
 			versionContract, err = config.ParseContractFromVersion(initCmdFlags.talosVersion)
 			if err != nil {
@@ -151,10 +155,54 @@ func writeSecretsBundleToFile(bundle *secrets.Bundle) error {
 	return writeToDestination(bundleBytes, secretsFile, 0o644)
 }
 
+func updateTalmLibraryChart() error {
+	talmChartDir := filepath.Join(Config.RootDir, "charts/talm")
+
+	if err := os.RemoveAll(talmChartDir); err != nil {
+		return fmt.Errorf("failed to remove existing talm chart directory: %w", err)
+	}
+
+	content, exists := generated.PresetFiles["talm/Chart.yaml"]
+	if !exists {
+		return fmt.Errorf("talm chart preset not found")
+	}
+
+	file := filepath.Join(talmChartDir, "Chart.yaml")
+	err := writeToDestination([]byte(fmt.Sprintf(content, "talm", Config.InitOptions.Version)), file, 0o644)
+	if err != nil {
+		return err
+	}
+
+	// Remove the existing talm chart directory
+	if err := os.RemoveAll(talmChartDir); err != nil {
+		return fmt.Errorf("failed to remove existing talm chart directory: %w", err)
+	}
+
+	for path, content := range generated.PresetFiles {
+		parts := strings.SplitN(path, "/", 2)
+		chartName := parts[0]
+		// Write library chart
+		if chartName == "talm" {
+			file := filepath.Join(Config.RootDir, filepath.Join("charts", path))
+			if parts[len(parts)-1] == "Chart.yaml" {
+				writeToDestination([]byte(fmt.Sprintf(content, "talm", Config.InitOptions.Version)), file, 0o644)
+			} else {
+				err = writeToDestination([]byte(content), file, 0o644)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func init() {
 	initCmd.Flags().StringVar(&initCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
 	initCmd.Flags().StringVarP(&initCmdFlags.preset, "preset", "p", "generic", "specify preset to generate files")
 	initCmd.Flags().BoolVar(&initCmdFlags.force, "force", false, "will overwrite existing files")
+	initCmd.Flags().BoolVarP(&initCmdFlags.update, "update", "u", false, "update Talm library chart")
 
 	addCommand(initCmd)
 }
@@ -171,7 +219,7 @@ func isValidPreset(preset string) bool {
 func validateFileExists(file string) error {
 	if !initCmdFlags.force {
 		if _, err := os.Stat(file); err == nil {
-			return fmt.Errorf("file %q already exists, use --force to overwrite", file)
+			return fmt.Errorf("file %q already exists, use --force to overwrite, and --update to update Talm library chart only", file)
 		}
 	}
 

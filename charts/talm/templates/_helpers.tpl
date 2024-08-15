@@ -24,7 +24,7 @@
 {{- define "talm.discovered.disks_info" }}
 # -- Discovered disks:
 {{- range .Disks }}
-{{- if not (regexMatch "^/dev/(zd)" .device_name) }}
+{{- if not (regexMatch "^/dev/(zd|drbd)" .device_name) }}
 # {{ .device_name }}:
 #    model: {{ .model }}
 #    serial: {{ .serial }}

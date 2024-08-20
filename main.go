@@ -81,9 +81,13 @@ func init() {
 }
 
 func initConfig() {
-	cmd, _, _ := rootCmd.Find(os.Args[1:])
-	if cmd == nil {
+	cmdName := os.Args[1]
+	cmd, _, err := rootCmd.Find([]string{cmdName})
+	if err != nil || cmd == nil {
 		return
+	}
+	if cmd.HasParent() && cmd.Parent() != rootCmd {
+		cmd = cmd.Parent()
 	}
 	if strings.HasPrefix(cmd.Use, "init") {
 		if strings.HasPrefix(Version, "v") {
@@ -92,10 +96,12 @@ func initConfig() {
 			commands.Config.InitOptions.Version = "0.1.0"
 		}
 	} else {
-		configFile := filepath.Join(commands.Config.RootDir, "Chart.yaml")
-		if err := loadConfig(configFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
-			os.Exit(1)
+		if !strings.HasPrefix(cmd.Use, "completion") {
+			configFile := filepath.Join(commands.Config.RootDir, "Chart.yaml")
+			if err := loadConfig(configFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 }

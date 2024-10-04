@@ -50,6 +50,8 @@ machine:
       [plugins]
         [plugins."io.containerd.grpc.v1.cri"]
           device_ownership_from_security_context = true      
+        [plugins."io.containerd.cri.v1.runtime"]
+          device_ownership_from_security_context = true
     path: /etc/cri/conf.d/20-customization.part
     op: create
   install:
@@ -117,7 +119,7 @@ cluster:
 	"cozystack/values.yaml": `endpoint: "https://192.168.100.10:6443"
 clusterDomain: cozy.local
 floatingIP: 192.168.100.10
-image: "ghcr.io/aenix-io/cozystack/talos:v1.7.6"
+image: "ghcr.io/aenix-io/cozystack/talos:v1.8.0"
 podSubnets:
 - 10.244.0.0/16
 serviceSubnets:

@@ -20,6 +20,8 @@ machine:
       [plugins]
         [plugins."io.containerd.grpc.v1.cri"]
           device_ownership_from_security_context = true      
+        [plugins."io.containerd.cri.v1.runtime"]
+          device_ownership_from_security_context = true
     path: /etc/cri/conf.d/20-customization.part
     op: create
   install:

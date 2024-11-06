@@ -119,7 +119,7 @@ cluster:
 	"cozystack/values.yaml": `endpoint: "https://192.168.100.10:6443"
 clusterDomain: cozy.local
 floatingIP: 192.168.100.10
-image: "ghcr.io/aenix-io/cozystack/talos:v1.8.0"
+image: "ghcr.io/aenix-io/cozystack/talos:v1.8.2"
 podSubnets:
 - 10.244.0.0/16
 serviceSubnets:
@@ -242,7 +242,7 @@ description: A library Talm chart for Talos Linux
 {{- define "talm.discovered.disks_info" }}
 # -- Discovered disks:
 {{- range .Disks }}
-{{- if not (regexMatch "^/dev/(zd|drbd)" .device_name) }}
+{{- if .wwid }}
 # {{ .device_name }}:
 #    model: {{ .model }}
 #    serial: {{ .serial }}

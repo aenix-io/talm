@@ -68,12 +68,11 @@ cluster:
     extraArgs:
       bind-address: 0.0.0.0
   apiServer:
-    apiServer:
-      extraArgs:
-        oidc-issuer-url: "https://keycloak.example.com/realms/cozy"
-        oidc-client-id: "kubernetes"
-        oidc-username-claim: "preferred_username"
-        oidc-groups-claim: "groups"
+    extraArgs:
+      oidc-issuer-url: "https://keycloak.example.com/realms/cozy"
+      oidc-client-id: "kubernetes"
+      oidc-username-claim: "preferred_username"
+      oidc-groups-claim: "groups"
     certSANs:
     - 127.0.0.1
   proxy:

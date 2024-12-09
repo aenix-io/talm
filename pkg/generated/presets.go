@@ -98,11 +98,13 @@ cluster:
     extraArgs:
       bind-address: 0.0.0.0
   apiServer:
+    {{- if and .Values.oidcIssuerUrl (ne .Values.oidcIssuerUrl "") }}
     extraArgs:
-      oidc-issuer-url: "https://keycloak.example.com/realms/cozy"
+      oidc-issuer-url: "{{ .Values.oidcIssuerUrl }}"
       oidc-client-id: "kubernetes"
       oidc-username-claim: "preferred_username"
       oidc-groups-claim: "groups"
+    {{- end }}
     certSANs:
     - 127.0.0.1
   proxy:
@@ -131,6 +133,7 @@ serviceSubnets:
 - 10.96.0.0/16
 advertisedSubnets:
 - 192.168.100.0/24
+oidcIssuerUrl: ""
 `,
 	"generic/Chart.yaml": `apiVersion: v2
 name: %s

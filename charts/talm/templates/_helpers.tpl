@@ -1,7 +1,7 @@
 {{- define "talm.discovered.system_disk_name" }}
 {{- $disk := "" }}
 {{- range .Disks }}
-{{- if eq $disk "" }}
+{{- if and (eq $disk "") .wwid }}
 {{- $disk = .device_name }}
 {{- end }}
 {{- if .system_disk }}

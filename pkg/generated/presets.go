@@ -15,7 +15,7 @@ templateOptions:
   fileValues: []
   jsonValues: []
   literalValues: []
-  talosVersion: "v1.7"
+  talosVersion: "v1.8"
   withSecrets: "secrets.yaml"
   kubernetesVersion: ""
   full: false
@@ -75,7 +75,9 @@ machine:
       vip:
         ip: {{ . }}
       {{- end }}{{ end }}
-
+  nodeLabels:
+    node.kubernetes.io/exclude-from-external-load-balancers:
+      $patch: delete
 
 cluster:
   network:
@@ -126,7 +128,7 @@ cluster:
 	"cozystack/values.yaml": `endpoint: "https://192.168.100.10:6443"
 clusterDomain: cozy.local
 floatingIP: 192.168.100.10
-image: "ghcr.io/aenix-io/cozystack/talos:v1.8.3"
+image: "ghcr.io/aenix-io/cozystack/talos:v1.8.4"
 podSubnets:
 - 10.244.0.0/16
 serviceSubnets:

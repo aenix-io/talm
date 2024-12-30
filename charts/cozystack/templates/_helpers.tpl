@@ -45,7 +45,9 @@ machine:
       vip:
         ip: {{ . }}
       {{- end }}{{ end }}
-
+  nodeLabels:
+    node.kubernetes.io/exclude-from-external-load-balancers:
+      $patch: delete
 
 cluster:
   network:

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -72,7 +72,7 @@ func NewLocalClient(ctx context.Context, dialOpts ...grpc.DialOption) (client *C
 	return NewClient(
 		ctx,
 		[]string{nethelpers.JoinHostPort("localhost", constants.EtcdClientPort)},
-		append([]grpc.DialOption{grpc.WithBlock()}, dialOpts...)...,
+		dialOpts...,
 	)
 }
 
@@ -92,7 +92,7 @@ func NewClientFromControlPlaneIPs(ctx context.Context, resources state.State, di
 
 // ValidateForUpgrade validates the etcd cluster state to ensure that performing
 // an upgrade is safe.
-func (c *Client) ValidateForUpgrade(ctx context.Context, config config.Config, preserve bool) error {
+func (c *Client) ValidateForUpgrade(ctx context.Context, config config.Config) error {
 	if config.Machine().Type() == machine.TypeWorker {
 		return nil
 	}
@@ -100,12 +100,6 @@ func (c *Client) ValidateForUpgrade(ctx context.Context, config config.Config, p
 	resp, err := c.MemberList(ctx)
 	if err != nil {
 		return err
-	}
-
-	if !preserve {
-		if len(resp.Members) == 1 {
-			return errors.New("only 1 etcd member found; assuming this is not an HA setup and refusing to upgrade; if this is a single-node cluster, use --preserve to upgrade")
-		}
 	}
 
 	if len(resp.Members) == 2 {
@@ -175,6 +169,11 @@ func (c *Client) LeaveCluster(ctx context.Context, st state.State) error {
 		if errors.Is(err, rpctypes.ErrStopped) {
 			// retry the stopped errors as the member might be in the process of shutting down
 			return retry.ExpectedError(err)
+		}
+
+		if errors.Is(err, rpctypes.ErrMemberNotFound) {
+			// already removed, nothing to do
+			return nil
 		}
 
 		return err

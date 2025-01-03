@@ -13,23 +13,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/cio"
-	"github.com/containerd/containerd/contrib/seccomp"
-	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/oci"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/contrib/seccomp"
+	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/oci"
+	"github.com/containerd/errdefs"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/events"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner"
 	"github.com/aenix-io/talm/internal/pkg/cgroup"
+	"github.com/aenix-io/talm/internal/pkg/selinux"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 // containerdRunner is a runner.Runner that runs container in containerd.
 type containerdRunner struct {
-	args  *runner.Args
-	opts  *runner.Options
-	debug bool
+	args         *runner.Args
+	opts         *runner.Options
+	logToConsole bool
 
 	stop    chan struct{}
 	stopped chan struct{}
@@ -41,13 +43,13 @@ type containerdRunner struct {
 }
 
 // NewRunner creates runner.Runner that runs a container in containerd.
-func NewRunner(debug bool, args *runner.Args, setters ...runner.Option) runner.Runner {
+func NewRunner(logToConsole bool, args *runner.Args, setters ...runner.Option) runner.Runner {
 	r := &containerdRunner{
-		args:    args,
-		opts:    runner.DefaultOptions(),
-		debug:   debug,
-		stop:    make(chan struct{}),
-		stopped: make(chan struct{}),
+		args:         args,
+		opts:         runner.DefaultOptions(),
+		logToConsole: logToConsole,
+		stop:         make(chan struct{}),
+		stopped:      make(chan struct{}),
 	}
 
 	for _, setter := range setters {
@@ -170,7 +172,7 @@ func (c *containerdRunner) Run(eventSink events.Recorder) error {
 
 	var w io.Writer = logW
 
-	if c.debug {
+	if c.logToConsole {
 		w = io.MultiWriter(w, os.Stdout)
 	}
 
@@ -268,7 +270,7 @@ func (c *containerdRunner) newContainerOpts(
 	image containerd.Image,
 	specOpts []oci.SpecOpts,
 ) []containerd.NewContainerOpts {
-	containerOpts := []containerd.NewContainerOpts{}
+	var containerOpts []containerd.NewContainerOpts
 
 	if image != nil {
 		containerOpts = append(
@@ -292,7 +294,7 @@ func (c *containerdRunner) newContainerOpts(
 }
 
 func (c *containerdRunner) newOCISpecOpts(image oci.Image) []oci.SpecOpts {
-	specOpts := []oci.SpecOpts{}
+	var specOpts []oci.SpecOpts
 
 	if image != nil {
 		specOpts = append(
@@ -339,6 +341,20 @@ func (c *containerdRunner) newOCISpecOpts(image oci.Image) []oci.SpecOpts {
 			specOpts,
 			seccomp.WithDefaultProfile(), // add seccomp profile last, as it depends on process capabilities
 		)
+	}
+
+	if selinux.IsEnabled() {
+		if c.opts.SelinuxLabel != "" {
+			specOpts = append(
+				specOpts,
+				oci.WithSelinuxLabel(c.opts.SelinuxLabel),
+			)
+		} else {
+			specOpts = append(
+				specOpts,
+				oci.WithSelinuxLabel(constants.SelinuxLabelUnconfinedSysContainer),
+			)
+		}
 	}
 
 	return specOpts

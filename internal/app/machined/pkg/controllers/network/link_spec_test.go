@@ -8,8 +8,8 @@ package network_test
 import (
 	"context"
 	"fmt"
-	"log"
-	"math/rand"
+	"math/rand/v2"
+	"net"
 	"net/netip"
 	"os"
 	"sync"
@@ -18,19 +18,21 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller/runtime"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
+	"github.com/jsimonetti/rtnetlink/v2"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	networkadapter "github.com/aenix-io/talm/internal/app/machined/pkg/adapters/network"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/controllers/ctest"
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
@@ -59,7 +61,7 @@ func (suite *LinkSpecSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	// create fake device ready status
@@ -139,7 +141,7 @@ func (suite *LinkSpecSuite) assertNoInterface(id string) error {
 }
 
 func (suite *LinkSpecSuite) uniqueDummyInterface() string {
-	return fmt.Sprintf("dummy%02x%02x%02x", rand.Int31()&0xff, rand.Int31()&0xff, rand.Int31()&0xff)
+	return fmt.Sprintf("dummy%02x%02x%02x", rand.Int32()&0xff, rand.Int32()&0xff, rand.Int32()&0xff)
 }
 
 func (suite *LinkSpecSuite) TestLoopback() {
@@ -322,6 +324,155 @@ func (suite *LinkSpecSuite) TestVLAN() {
 					[]string{vlanName1}, func(r *network.LinkStatus) error {
 						if r.TypedSpec().VLAN.VID != 42 {
 							return retry.ExpectedErrorf("vlan ID is not 42: %d", r.TypedSpec().VLAN.VID)
+						}
+
+						return nil
+					},
+				)
+			},
+		),
+	)
+
+	// teardown the links
+	for _, r := range []resource.Resource{vlan1, vlan2, dummy} {
+		for {
+			ready, err := suite.state.Teardown(suite.ctx, r.Metadata())
+			suite.Require().NoError(err)
+
+			if ready {
+				break
+			}
+
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertNoInterface(dummyInterface)
+			},
+		),
+	)
+}
+
+//nolint:gocyclo
+func (suite *LinkSpecSuite) TestVLANViaAlias() {
+	dummyInterface := suite.uniqueDummyInterface()
+
+	dummy := network.NewLinkSpec(network.NamespaceName, dummyInterface)
+	*dummy.TypedSpec() = network.LinkSpecSpec{
+		Name:        dummyInterface,
+		Type:        nethelpers.LinkEther,
+		Kind:        "dummy",
+		Up:          true,
+		Logical:     true,
+		ConfigLayer: network.ConfigDefault,
+	}
+
+	suite.Require().NoError(suite.state.Create(suite.ctx, dummy), "%v", dummy.Spec())
+
+	// create dummy interface, and create an alias for it manually
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertInterfaces(
+					[]string{dummyInterface}, func(r *network.LinkStatus) error {
+						suite.Assert().Equal("dummy", r.TypedSpec().Kind)
+
+						if r.TypedSpec().OperationalState != nethelpers.OperStateUnknown && r.TypedSpec().OperationalState != nethelpers.OperStateUp {
+							return retry.ExpectedErrorf("link is not up")
+						}
+
+						return nil
+					},
+				)
+			},
+		),
+	)
+
+	conn, err := rtnetlink.Dial(nil)
+	suite.Require().NoError(err)
+
+	defer conn.Close() //nolint:errcheck
+
+	iface, err := net.InterfaceByName(dummyInterface)
+	suite.Require().NoError(err)
+
+	dummyAlias := suite.uniqueDummyInterface()
+
+	suite.Require().NoError(
+		conn.Link.Set(
+			&rtnetlink.LinkMessage{
+				Index: uint32(iface.Index),
+				Attributes: &rtnetlink.LinkAttributes{
+					Alias: &dummyAlias,
+				},
+			},
+		),
+	)
+
+	vlanName1 := fmt.Sprintf("%s.%d", dummyAlias, 2)
+	vlan1 := network.NewLinkSpec(network.NamespaceName, vlanName1)
+	*vlan1.TypedSpec() = network.LinkSpecSpec{
+		Name:        vlanName1,
+		Type:        nethelpers.LinkEther,
+		Kind:        network.LinkKindVLAN,
+		Up:          true,
+		Logical:     true,
+		ParentName:  dummyAlias,
+		ConfigLayer: network.ConfigDefault,
+		VLAN: network.VLANSpec{
+			VID:      2,
+			Protocol: nethelpers.VLANProtocol8021Q,
+		},
+	}
+
+	vlanName2 := fmt.Sprintf("%s.%d", dummyAlias, 4)
+	vlan2 := network.NewLinkSpec(network.NamespaceName, vlanName2)
+	*vlan2.TypedSpec() = network.LinkSpecSpec{
+		Name:        vlanName2,
+		Type:        nethelpers.LinkEther,
+		Kind:        network.LinkKindVLAN,
+		Up:          true,
+		Logical:     true,
+		ParentName:  dummyAlias,
+		ConfigLayer: network.ConfigDefault,
+		VLAN: network.VLANSpec{
+			VID:      4,
+			Protocol: nethelpers.VLANProtocol8021Q,
+		},
+	}
+
+	for _, res := range []resource.Resource{vlan1, vlan2} {
+		suite.Require().NoError(suite.state.Create(suite.ctx, res), "%v", res.Spec())
+	}
+
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertInterfaces(
+					[]string{dummyInterface, vlanName1, vlanName2}, func(r *network.LinkStatus) error {
+						switch r.Metadata().ID() {
+						case dummyInterface:
+							suite.Assert().Equal("dummy", r.TypedSpec().Kind)
+
+							if r.TypedSpec().Alias != dummyAlias {
+								return retry.ExpectedErrorf("alias is not %s: %s", dummyAlias, r.TypedSpec().Alias)
+							}
+						case vlanName1, vlanName2:
+							suite.Assert().Equal(network.LinkKindVLAN, r.TypedSpec().Kind)
+							suite.Assert().Equal(nethelpers.VLANProtocol8021Q, r.TypedSpec().VLAN.Protocol)
+
+							if r.Metadata().ID() == vlanName1 {
+								suite.Assert().EqualValues(2, r.TypedSpec().VLAN.VID)
+							} else {
+								suite.Assert().EqualValues(4, r.TypedSpec().VLAN.VID)
+							}
+						}
+
+						if r.TypedSpec().OperationalState != nethelpers.OperStateUnknown && r.TypedSpec().OperationalState != nethelpers.OperStateUp {
+							return retry.ExpectedErrorf("link is not up")
 						}
 
 						return nil
@@ -703,9 +854,10 @@ func (suite *LinkSpecSuite) TestBridge() {
 		),
 	)
 
-	// attempt to enable STP
+	// attempt to enable STP & VLAN filtering
 	ctest.UpdateWithConflicts(suite, bridge, func(r *network.LinkSpec) error {
 		r.TypedSpec().BridgeMaster.STP.Enabled = true
+		r.TypedSpec().BridgeMaster.VLAN.FilteringEnabled = true
 
 		return nil
 	})
@@ -718,6 +870,12 @@ func (suite *LinkSpecSuite) TestBridge() {
 						if !r.TypedSpec().BridgeMaster.STP.Enabled {
 							return retry.ExpectedErrorf(
 								"stp is not enabled on bridge %s", r.Metadata().ID(),
+							)
+						}
+
+						if !r.TypedSpec().BridgeMaster.VLAN.FilteringEnabled {
+							return retry.ExpectedErrorf(
+								"vlan filtering is not enabled on bridge %s", r.Metadata().ID(),
 							)
 						}
 
@@ -912,7 +1070,7 @@ func TestLinkSpecSuite(t *testing.T) {
 }
 
 func TestSortBonds(t *testing.T) {
-	expectedSlice := []network.LinkSpecSpec{
+	expected := toResources([]network.LinkSpecSpec{
 		{
 			Name: "A",
 		}, {
@@ -942,33 +1100,30 @@ func TestSortBonds(t *testing.T) {
 				SlaveIndex: 2,
 			},
 		},
-	}
+	})
 
 	seed := time.Now().Unix()
-	rnd := rand.New(rand.NewSource(seed))
+
+	rnd := rand.New(rand.NewPCG(uint64(time.Now().Unix()), uint64(time.Now().Unix())))
 
 	for i := range 100 {
-		res := toResources(expectedSlice)
-		rnd.Shuffle(len(res), func(i, j int) { res[i], res[j] = res[j], res[i] })
-		netctrl.SortBonds(res)
-		sorted := toSpecs(res)
-		require.Equal(t, expectedSlice, sorted, "failed with seed %d iteration %d", seed, i)
+		res := safe.NewList[*network.LinkSpec](resource.List{
+			Items: safe.ToSlice(expected, func(r *network.LinkSpec) resource.Resource { return r }),
+		})
+
+		rnd.Shuffle(res.Len(), res.Swap)
+		netctrl.SortBonds(&res)
+		require.Equal(t, expected, res, "failed with seed %d iteration %d", seed, i)
 	}
 }
 
-func toResources(slice []network.LinkSpecSpec) []resource.Resource {
-	return xslices.Map(slice, func(spec network.LinkSpecSpec) resource.Resource {
-		link := network.NewLinkSpec(network.NamespaceName, "bar")
-		*link.TypedSpec() = spec
+func toResources(slice []network.LinkSpecSpec) safe.List[*network.LinkSpec] {
+	return safe.NewList[*network.LinkSpec](resource.List{
+		Items: xslices.Map(slice, func(spec network.LinkSpecSpec) resource.Resource {
+			link := network.NewLinkSpec(network.NamespaceName, "bar")
+			*link.TypedSpec() = spec
 
-		return link
-	})
-}
-
-func toSpecs(slice []resource.Resource) []network.LinkSpecSpec {
-	return xslices.Map(slice, func(r resource.Resource) network.LinkSpecSpec {
-		v := r.Spec().(*network.LinkSpecSpec) //nolint:errcheck
-
-		return *v
+			return link
+		}),
 	})
 }

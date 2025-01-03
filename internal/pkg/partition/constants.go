@@ -21,14 +21,17 @@ type FileSystemType = string
 
 // Filesystem types.
 const (
-	FilesystemTypeNone FileSystemType = "none"
-	FilesystemTypeXFS  FileSystemType = "xfs"
-	FilesystemTypeVFAT FileSystemType = "vfat"
+	FilesystemTypeNone   FileSystemType = "none"
+	FilesystemTypeZeroes FileSystemType = "zeroes"
+	FilesystemTypeXFS    FileSystemType = "xfs"
+	FilesystemTypeVFAT   FileSystemType = "vfat"
+	FileSystemTypeExt4   FileSystemType = "ext4"
 )
 
 // Partition default sizes.
 const (
 	MiB = 1024 * 1024
+	GiB = 1024 * MiB
 
 	EFISize      = 100 * MiB
 	BIOSGrubSize = 1 * MiB
@@ -36,7 +39,8 @@ const (
 	// EFIUKISize is the size of the EFI partition when UKI is enabled.
 	// With UKI all assets are stored in the EFI partition.
 	// This is the size of the old EFISize + BIOSGrubSize + BootSize.
-	EFIUKISize = EFISize + BIOSGrubSize + BootSize
-	MetaSize   = 1 * MiB
-	StateSize  = 100 * MiB
+	EFIUKISize       = EFISize + BIOSGrubSize + BootSize
+	MetaSize         = 1 * MiB
+	StateSize        = 100 * MiB
+	EphemeralMinSize = 2 * GiB
 )

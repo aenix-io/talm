@@ -11,6 +11,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/value"
 	"github.com/siderolabs/go-procfs/procfs"
@@ -156,11 +157,12 @@ func (ctrl *RouteConfigController) apply(ctx context.Context, r controller.Runti
 	for _, route := range routes {
 		id := network.LayeredID(route.ConfigLayer, network.RouteID(route.Table, route.Family, route.Destination, route.Gateway, route.Priority, route.OutLinkName))
 
-		if err := r.Modify(
+		if err := safe.WriterModify(
 			ctx,
+			r,
 			network.NewRouteSpec(network.ConfigNamespaceName, id),
-			func(r resource.Resource) error {
-				*r.(*network.RouteSpec).TypedSpec() = route
+			func(r *network.RouteSpec) error {
+				*r.TypedSpec() = route
 
 				return nil
 			},
@@ -257,7 +259,7 @@ func (ctrl *RouteConfigController) processDevicesConfiguration(logger *zap.Logge
 			}
 		}
 
-		route.Normalize()
+		normalizedFamily := route.Normalize()
 
 		route.Priority = in.Metric()
 		if route.Priority == 0 {
@@ -271,6 +273,8 @@ func (ctrl *RouteConfigController) processDevicesConfiguration(logger *zap.Logge
 			route.Family = nethelpers.FamilyInet6
 		case !value.IsZero(route.Destination) && route.Destination.Addr().Is6():
 			route.Family = nethelpers.FamilyInet6
+		case normalizedFamily != 0:
+			route.Family = normalizedFamily
 		default:
 			route.Family = nethelpers.FamilyInet4
 		}

@@ -15,8 +15,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/labels"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
+	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
 
 // NodeLabelSpecController manages k8s.NodeLabelsConfig based on configuration.
@@ -36,6 +38,11 @@ func (ctrl *NodeLabelSpecController) Inputs() []controller.Input {
 			ID:        optional.Some(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
+		{
+			Namespace: runtime.NamespaceName,
+			Type:      runtime.ExtensionStatusType,
+			Kind:      controller.InputWeak,
+		},
 	}
 }
 
@@ -52,7 +59,7 @@ func (ctrl *NodeLabelSpecController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo
-func (ctrl *NodeLabelSpecController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *NodeLabelSpecController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -67,18 +74,25 @@ func (ctrl *NodeLabelSpecController) Run(ctx context.Context, r controller.Runti
 
 		r.StartTrackingOutputs()
 
-		var nodeLabels map[string]string
+		nodeLabels := map[string]string{}
 
 		if cfg != nil && cfg.Config().Machine() != nil {
-			nodeLabels = cfg.Config().Machine().NodeLabels()
+			for k, v := range cfg.Config().Machine().NodeLabels() {
+				nodeLabels[k] = v
+			}
 
 			if cfg.Config().Machine().Type().IsControlPlane() {
-				if nodeLabels == nil {
-					nodeLabels = map[string]string{}
-				}
-
 				nodeLabels[constants.LabelNodeRoleControlPlane] = ""
 			}
+		}
+
+		if err = extensionsToNodeKV(
+			ctx, r, nodeLabels,
+			func(labelValue string) bool {
+				return labels.ValidateLabelValue(labelValue) == nil
+			},
+		); err != nil {
+			return fmt.Errorf("error converting extensions to node labels: %w", err)
 		}
 
 		for key, value := range nodeLabels {
@@ -96,4 +110,26 @@ func (ctrl *NodeLabelSpecController) Run(ctx context.Context, r controller.Runti
 			return err
 		}
 	}
+}
+
+func extensionsToNodeKV(ctx context.Context, r controller.Reader, spec map[string]string, valueFilter func(string) bool) error {
+	extensionStatuses, err := safe.ReaderListAll[*runtime.ExtensionStatus](ctx, r)
+	if err != nil {
+		return fmt.Errorf("error listing extension statuses: %w", err)
+	}
+
+	for extensionStatus := range extensionStatuses.All() {
+		if extensionStatus.TypedSpec().Metadata.Name == "" {
+			continue
+		}
+
+		name := constants.K8sExtensionPrefix + extensionStatus.TypedSpec().Metadata.Name
+		value := extensionStatus.TypedSpec().Metadata.Version
+
+		if labels.ValidateQualifiedName(name) == nil && valueFilter(value) {
+			spec[name] = value
+		}
+	}
+
+	return nil
 }

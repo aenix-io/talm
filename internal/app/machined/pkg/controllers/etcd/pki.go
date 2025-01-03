@@ -17,6 +17,7 @@ import (
 	"github.com/siderolabs/gen/optional"
 	"go.uber.org/zap"
 
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/filetree"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/etcd"
@@ -62,7 +63,7 @@ func (ctrl *PKIController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo
-func (ctrl *PKIController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *PKIController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -89,6 +90,10 @@ func (ctrl *PKIController) Run(ctx context.Context, r controller.Runtime, logger
 		}
 
 		if err = os.MkdirAll(constants.EtcdPKIPath, 0o700); err != nil {
+			return err
+		}
+
+		if err = selinux.SetLabel(constants.EtcdPKIPath, constants.EtcdPKISELinuxLabel); err != nil {
 			return err
 		}
 

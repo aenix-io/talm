@@ -14,7 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/cosi-project/runtime/pkg/safe"
@@ -43,24 +43,37 @@ const (
 	mnt                     = "/mnt"
 )
 
+// NetworkCloudInitConfig wraps nocloud network config to match cloud-init format.
+type NetworkCloudInitConfig struct {
+	Config NetworkConfig `yaml:"network"`
+}
+
 // NetworkConfig holds network-config info.
 type NetworkConfig struct {
-	Version int `yaml:"version"`
-	Config  []struct {
-		Mac        string `yaml:"mac_address,omitempty"`
-		Interfaces string `yaml:"name,omitempty"`
-		MTU        uint32 `yaml:"mtu,omitempty"`
-		Subnets    []struct {
-			Address string `yaml:"address,omitempty"`
-			Netmask string `yaml:"netmask,omitempty"`
-			Gateway string `yaml:"gateway,omitempty"`
-			Type    string `yaml:"type"`
-		} `yaml:"subnets,omitempty"`
-		Address []string `yaml:"address,omitempty"`
-		Type    string   `yaml:"type"`
-	} `yaml:"config,omitempty"`
+	Version   int                 `yaml:"version"`
+	Config    []ConfigV1          `yaml:"config,omitempty"`
 	Ethernets map[string]Ethernet `yaml:"ethernets,omitempty"`
-	Bonds     map[string]Bonds    `yaml:"bonds,omitempty"`
+	Bonds     map[string]Bond     `yaml:"bonds,omitempty"`
+	VLANs     map[string]VLAN     `yaml:"vlans,omitempty"`
+}
+
+// ConfigV1 holds nocloud v1 config.
+type ConfigV1 struct {
+	Mac        string `yaml:"mac_address,omitempty"`
+	Interfaces string `yaml:"name,omitempty"`
+	MTU        uint32 `yaml:"mtu,omitempty"`
+	Subnets    []struct {
+		Address string `yaml:"address,omitempty"`
+		Netmask string `yaml:"netmask,omitempty"`
+		Gateway string `yaml:"gateway,omitempty"`
+		Type    string `yaml:"type"`
+	} `yaml:"subnets,omitempty"`
+	Address        []string      `yaml:"address,omitempty"`
+	Type           string        `yaml:"type"`
+	BondInterfaces []string      `yaml:"bond_interfaces,omitempty"`
+	VlanID         uint16        `yaml:"vlan_id,omitempty"`
+	VlanLink       string        `yaml:"vlan_link,omitempty"`
+	Params         NetworkParams `yaml:"params,omitempty"`
 }
 
 // Ethernet holds network interface info.
@@ -82,8 +95,9 @@ type Ethernet struct {
 	Routes []struct {
 		To     string `yaml:"to,omitempty"`
 		Via    string `yaml:"via,omitempty"`
-		Metric string `yaml:"metric,omitempty"`
+		Metric uint32 `yaml:"metric,omitempty"`
 		Table  uint32 `yaml:"table,omitempty"`
+		OnLink bool   `yaml:"on-link,omitempty"`
 	} `yaml:"routes,omitempty"`
 	RoutingPolicy []struct { // TODO
 		From  string `yaml:"froom,omitempty"`
@@ -91,8 +105,8 @@ type Ethernet struct {
 	} `yaml:"routing-policy,omitempty"`
 }
 
-// Bonds holds bonding interface info.
-type Bonds struct {
+// Bond holds bonding interface info.
+type Bond struct {
 	Ethernet   `yaml:",inline"`
 	Interfaces []string `yaml:"interfaces,omitempty"`
 	Params     struct {
@@ -105,15 +119,33 @@ type Bonds struct {
 	} `yaml:"parameters,omitempty"`
 }
 
+// VLAN holds vlan interface info.
+type VLAN struct {
+	Ethernet `yaml:",inline"`
+	ID       uint16 `yaml:"id,omitempty"`
+	Link     string `yaml:"link,omitempty"`
+}
+
 // MetadataConfig holds meta info.
 type MetadataConfig struct {
-	Hostname      string `yaml:"hostname,omitempty"`
-	LocalHostname string `yaml:"local-hostname,omitempty"`
-	InstanceID    string `yaml:"instance-id,omitempty"`
-	InstanceType  string `yaml:"instance-type,omitempty"`
-	ProviderID    string `yaml:"provider-id,omitempty"`
-	Region        string `yaml:"region,omitempty"`
-	Zone          string `yaml:"zone,omitempty"`
+	Hostname     string `yaml:"hostname,omitempty"`
+	InternalDNS  string `json:"local-hostname,omitempty"`
+	ExternalDNS  string `json:"public-hostname,omitempty"`
+	InstanceID   string `yaml:"instance-id,omitempty"`
+	InstanceType string `yaml:"instance-type,omitempty"`
+	ProviderID   string `yaml:"provider-id,omitempty"`
+	Region       string `yaml:"region,omitempty"`
+	Zone         string `yaml:"zone,omitempty"`
+}
+
+// NetworkParams holds network parameters (mostly bond for v1 network-config).
+type NetworkParams struct {
+	BondLACPRate       string `yaml:"bond-lacp-rate,omitempty"`
+	BondMiimon         uint32 `yaml:"bond-miimon,omitempty"`
+	BondMode           string `yaml:"bond-mode,omitempty"`
+	BondXmitHashPolicy string `yaml:"bond-xmit-hash-policy,omitempty"`
+	UpDelay            uint32 `yaml:"up-delay,omitempty"`
+	DownDelay          uint32 `yaml:"down-delay,omitempty"`
 }
 
 func (n *Nocloud) configFromNetwork(ctx context.Context, metaBaseURL string, r state.State) (metaConfig []byte, networkConfig []byte, machineConfig []byte, err error) {
@@ -209,10 +241,10 @@ func (n *Nocloud) configFromCD(ctx context.Context, r state.State) (metaConfig [
 }
 
 //nolint:gocyclo
-func (n *Nocloud) acquireConfig(ctx context.Context, r state.State) (metadataConfigDl, metadataNetworkConfigDl, machineConfigDl []byte, metadata *MetadataConfig, err error) {
+func (n *Nocloud) acquireConfig(ctx context.Context, r state.State) (metadataNetworkConfigDl, machineConfigDl []byte, metadata *MetadataConfig, err error) {
 	s, err := smbios.GetSMBIOSInfo()
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var (
@@ -246,6 +278,8 @@ func (n *Nocloud) acquireConfig(ctx context.Context, r state.State) (metadataCon
 		}
 	}
 
+	var metadataConfigDl []byte
+
 	if networkSource && metaBaseURL != "" {
 		metadataConfigDl, metadataNetworkConfigDl, machineConfigDl, err = n.configFromNetwork(ctx, metaBaseURL, r)
 	} else {
@@ -264,28 +298,122 @@ func (n *Nocloud) acquireConfig(ctx context.Context, r state.State) (metadataCon
 
 	// Some providers may provide the hostname via user-data instead of meta-data (e.g. Proxmox VE)
 	// As long as the user doesn't use it for machine config, it can still be used to obtain the hostname
-	if metadata.Hostname == "" && metadata.LocalHostname == "" && machineConfigDl != nil {
+	if metadata.Hostname == "" && metadata.InternalDNS == "" && machineConfigDl != nil {
 		fallbackMetadata := &MetadataConfig{}
 		_ = yaml.Unmarshal(machineConfigDl, fallbackMetadata) //nolint:errcheck
 		metadata.Hostname = fallbackMetadata.Hostname
-		metadata.LocalHostname = fallbackMetadata.LocalHostname
+		metadata.InternalDNS = fallbackMetadata.InternalDNS
 	}
 
-	return metadataConfigDl, metadataNetworkConfigDl, machineConfigDl, metadata, err
+	return metadataNetworkConfigDl, machineConfigDl, metadata, err
 }
 
 //nolint:gocyclo,cyclop
-func (n *Nocloud) applyNetworkConfigV1(config *NetworkConfig, st state.State, networkConfig *runtime.PlatformNetworkConfig) error {
-	ctx := context.TODO()
-
-	if err := netutils.WaitInterfaces(ctx, st); err != nil {
-		return err
-	}
-
+func (n *Nocloud) applyNetworkConfigV1(ctx context.Context, config *NetworkConfig, st state.State, networkConfig *runtime.PlatformNetworkConfig) (bool, error) {
 	hostInterfaces, err := safe.StateListAll[*network.LinkStatus](ctx, st)
 	if err != nil {
-		return fmt.Errorf("error listing host interfaces: %w", err)
+		return false, fmt.Errorf("error listing host interfaces: %w", err)
 	}
+
+	var needsReconcile bool
+
+	parseSubnets := func(ntwrk ConfigV1, name string) error {
+		for _, subnet := range ntwrk.Subnets {
+			switch subnet.Type {
+			case "dhcp", "dhcp4":
+				networkConfig.Operators = append(networkConfig.Operators, network.OperatorSpecSpec{
+					Operator:  network.OperatorDHCP4,
+					LinkName:  name,
+					RequireUp: true,
+					DHCP4: network.DHCP4OperatorSpec{
+						RouteMetric: network.DefaultRouteMetric,
+					},
+					ConfigLayer: network.ConfigPlatform,
+				})
+			case "static", "static6":
+				family := nethelpers.FamilyInet4
+
+				if subnet.Type == "static6" {
+					family = nethelpers.FamilyInet6
+				}
+
+				ipPrefix, err := netip.ParsePrefix(subnet.Address)
+				if err != nil {
+					ip, err := netip.ParseAddr(subnet.Address)
+					if err != nil {
+						return err
+					}
+
+					netmask, err := netip.ParseAddr(subnet.Netmask)
+					if err != nil {
+						return err
+					}
+
+					mask, _ := netmask.MarshalBinary() //nolint:errcheck // never fails
+					ones, _ := net.IPMask(mask).Size()
+					ipPrefix = netip.PrefixFrom(ip, ones)
+				}
+
+				networkConfig.Addresses = append(networkConfig.Addresses,
+					network.AddressSpecSpec{
+						ConfigLayer: network.ConfigPlatform,
+						LinkName:    name,
+						Address:     ipPrefix,
+						Scope:       nethelpers.ScopeGlobal,
+						Flags:       nethelpers.AddressFlags(nethelpers.AddressPermanent),
+						Family:      family,
+					},
+				)
+
+				if subnet.Gateway != "" {
+					gw, err := netip.ParseAddr(subnet.Gateway)
+					if err != nil {
+						return err
+					}
+
+					route := network.RouteSpecSpec{
+						ConfigLayer: network.ConfigPlatform,
+						Gateway:     gw,
+						OutLinkName: name,
+						Table:       nethelpers.TableMain,
+						Protocol:    nethelpers.ProtocolStatic,
+						Type:        nethelpers.TypeUnicast,
+						Family:      family,
+						Priority:    network.DefaultRouteMetric,
+					}
+
+					if family == nethelpers.FamilyInet6 {
+						route.Priority = 2 * network.DefaultRouteMetric
+					}
+
+					route.Normalize()
+
+					networkConfig.Routes = append(networkConfig.Routes, route)
+				}
+			case "ipv6_dhcpv6-stateful":
+				networkConfig.Operators = append(networkConfig.Operators, network.OperatorSpecSpec{
+					Operator:  network.OperatorDHCP6,
+					LinkName:  name,
+					RequireUp: true,
+					DHCP6: network.DHCP6OperatorSpec{
+						RouteMetric: 2 * network.DefaultRouteMetric,
+					},
+					ConfigLayer: network.ConfigPlatform,
+				})
+			}
+		}
+
+		return nil
+	}
+
+	physicalNameMap := map[string]string{}
+
+	type enslavedLink struct {
+		bondName   string
+		slaveIndex int
+	}
+
+	enslavedLinks := map[string]enslavedLink{}
 
 	for _, ntwrk := range config.Config {
 		switch ntwrk.Type {
@@ -296,7 +424,7 @@ func (n *Nocloud) applyNetworkConfigV1(config *NetworkConfig, st state.State, ne
 				if ip, err := netip.ParseAddr(ntwrk.Address[i]); err == nil {
 					dnsIPs = append(dnsIPs, ip)
 				} else {
-					return err
+					return false, err
 				}
 			}
 
@@ -304,17 +432,107 @@ func (n *Nocloud) applyNetworkConfigV1(config *NetworkConfig, st state.State, ne
 				DNSServers:  dnsIPs,
 				ConfigLayer: network.ConfigPlatform,
 			})
+		case "bond":
+			name := ntwrk.Interfaces
+
+			mode, err := nethelpers.BondModeByName(ntwrk.Params.BondMode)
+			if err != nil {
+				return false, fmt.Errorf("invalid mode: %w", err)
+			}
+
+			hashPolicy, err := nethelpers.BondXmitHashPolicyByName(ntwrk.Params.BondXmitHashPolicy)
+			if err != nil {
+				return false, fmt.Errorf("invalid transmit-hash-policy: %w", err)
+			}
+
+			lacpRate, err := nethelpers.LACPRateByName(ntwrk.Params.BondLACPRate)
+			if err != nil {
+				return false, fmt.Errorf("invalid lacp-rate: %w", err)
+			}
+
+			bondLink := network.LinkSpecSpec{
+				ConfigLayer: network.ConfigPlatform,
+				Name:        name,
+				Logical:     true,
+				Up:          true,
+				Kind:        network.LinkKindBond,
+				Type:        nethelpers.LinkEther,
+				BondMaster: network.BondMasterSpec{
+					Mode:       mode,
+					HashPolicy: hashPolicy,
+					MIIMon:     ntwrk.Params.BondMiimon,
+					UpDelay:    ntwrk.Params.UpDelay,
+					DownDelay:  ntwrk.Params.DownDelay,
+					LACPRate:   lacpRate,
+				},
+			}
+
+			if ntwrk.MTU != 0 {
+				bondLink.MTU = ntwrk.MTU
+			}
+
+			networkadapter.BondMasterSpec(&bondLink.BondMaster).FillDefaults()
+			networkConfig.Links = append(networkConfig.Links, bondLink)
+
+			for idx, slave := range ntwrk.BondInterfaces {
+				enslavedLinks[slave] = enslavedLink{
+					bondName:   name,
+					slaveIndex: idx,
+				}
+			}
+
+			if err = parseSubnets(ntwrk, name); err != nil {
+				return false, err
+			}
+		case "vlan":
+			name := ntwrk.Interfaces
+
+			parentName, ok := physicalNameMap[ntwrk.VlanLink]
+			if !ok {
+				parentName = ntwrk.VlanLink
+			}
+
+			linkSpec := network.LinkSpecSpec{
+				ConfigLayer: network.ConfigPlatform,
+				Name:        name,
+				Logical:     true,
+				Up:          true,
+				Kind:        network.LinkKindVLAN,
+				Type:        nethelpers.LinkEther,
+				ParentName:  parentName,
+				VLAN: network.VLANSpec{
+					VID:      ntwrk.VlanID,
+					Protocol: nethelpers.VLANProtocol8021Q,
+				},
+			}
+
+			if ntwrk.MTU != 0 {
+				linkSpec.MTU = ntwrk.MTU
+			}
+
+			networkConfig.Links = append(networkConfig.Links, linkSpec)
+
+			if err = parseSubnets(ntwrk, name); err != nil {
+				return false, err
+			}
 		case "physical":
 			name := ntwrk.Interfaces
 
 			if ntwrk.Mac != "" {
 				macAddressMatched := false
-				hostInterfaceIter := hostInterfaces.Iterator()
 
-				for hostInterfaceIter.Next() {
-					macAddress := hostInterfaceIter.Value().TypedSpec().PermanentAddr.String()
-					if macAddress == ntwrk.Mac {
-						name = hostInterfaceIter.Value().Metadata().ID()
+				for hostInterface := range hostInterfaces.All() {
+					if !hostInterface.TypedSpec().Physical() {
+						continue
+					}
+
+					macAddress := hostInterface.TypedSpec().PermanentAddr.String()
+					if macAddress == "" {
+						macAddress = hostInterface.TypedSpec().HardwareAddr.String()
+					}
+
+					if strings.EqualFold(macAddress, ntwrk.Mac) {
+						name = hostInterface.Metadata().ID()
 						macAddressMatched = true
 
 						break
@@ -323,103 +541,50 @@ func (n *Nocloud) applyNetworkConfigV1(config *NetworkConfig, st state.State, ne
 
 				if !macAddressMatched {
 					log.Printf("nocloud: no link with matching MAC address %q, defaulted to use name %s instead", ntwrk.Mac, name)
+
+					needsReconcile = true
 				}
 			}
 
-			networkConfig.Links = append(networkConfig.Links, network.LinkSpecSpec{
+			physicalNameMap[ntwrk.Interfaces] = name
+
+			linkSpec := network.LinkSpecSpec{
 				Name:        name,
 				Up:          true,
 				ConfigLayer: network.ConfigPlatform,
-			})
+			}
 
-			for _, subnet := range ntwrk.Subnets {
-				switch subnet.Type {
-				case "dhcp", "dhcp4":
-					networkConfig.Operators = append(networkConfig.Operators, network.OperatorSpecSpec{
-						Operator:  network.OperatorDHCP4,
-						LinkName:  name,
-						RequireUp: true,
-						DHCP4: network.DHCP4OperatorSpec{
-							RouteMetric: network.DefaultRouteMetric,
-						},
-						ConfigLayer: network.ConfigPlatform,
-					})
-				case "static", "static6":
-					family := nethelpers.FamilyInet4
+			if ntwrk.MTU != 0 {
+				linkSpec.MTU = ntwrk.MTU
+			}
 
-					if subnet.Type == "static6" {
-						family = nethelpers.FamilyInet6
-					}
+			networkConfig.Links = append(networkConfig.Links, linkSpec)
 
-					ipPrefix, err := netip.ParsePrefix(subnet.Address)
-					if err != nil {
-						ip, err := netip.ParseAddr(subnet.Address)
-						if err != nil {
-							return err
-						}
-
-						netmask, err := netip.ParseAddr(subnet.Netmask)
-						if err != nil {
-							return err
-						}
-
-						mask, _ := netmask.MarshalBinary() //nolint:errcheck // never fails
-						ones, _ := net.IPMask(mask).Size()
-						ipPrefix = netip.PrefixFrom(ip, ones)
-					}
-
-					networkConfig.Addresses = append(networkConfig.Addresses,
-						network.AddressSpecSpec{
-							ConfigLayer: network.ConfigPlatform,
-							LinkName:    name,
-							Address:     ipPrefix,
-							Scope:       nethelpers.ScopeGlobal,
-							Flags:       nethelpers.AddressFlags(nethelpers.AddressPermanent),
-							Family:      family,
-						},
-					)
-
-					if subnet.Gateway != "" {
-						gw, err := netip.ParseAddr(subnet.Gateway)
-						if err != nil {
-							return err
-						}
-
-						route := network.RouteSpecSpec{
-							ConfigLayer: network.ConfigPlatform,
-							Gateway:     gw,
-							OutLinkName: name,
-							Table:       nethelpers.TableMain,
-							Protocol:    nethelpers.ProtocolStatic,
-							Type:        nethelpers.TypeUnicast,
-							Family:      family,
-							Priority:    network.DefaultRouteMetric,
-						}
-
-						if family == nethelpers.FamilyInet6 {
-							route.Priority = 2 * network.DefaultRouteMetric
-						}
-
-						route.Normalize()
-
-						networkConfig.Routes = append(networkConfig.Routes, route)
-					}
-				case "ipv6_dhcpv6-stateful":
-					networkConfig.Operators = append(networkConfig.Operators, network.OperatorSpecSpec{
-						Operator:  network.OperatorDHCP6,
-						LinkName:  name,
-						RequireUp: true,
-						DHCP6: network.DHCP6OperatorSpec{
-							RouteMetric: 2 * network.DefaultRouteMetric,
-						},
-						ConfigLayer: network.ConfigPlatform,
-					})
-				}
+			if err = parseSubnets(ntwrk, name); err != nil {
+				return false, err
 			}
 		}
 	}
 
-	return nil
+	for slaveName, enslavedLink := range enslavedLinks {
+		physicalName, ok := physicalNameMap[slaveName]
+		if !ok {
+			physicalName = slaveName
+		}
+
+		for idx := range networkConfig.Links {
+			if networkConfig.Links[idx].Name != physicalName {
+				continue
+			}
+
+			networkConfig.Links[idx].BondSlave = network.BondSlave{
+				MasterName: enslavedLink.bondName,
+				SlaveIndex: enslavedLink.slaveIndex,
+			}
+		}
+	}
+
+	return needsReconcile, nil
 }
 
 //nolint:gocyclo
@@ -535,42 +700,71 @@ func applyNetworkConfigV2Ethernet(name string, eth Ethernet, networkConfig *runt
 			return fmt.Errorf("failed to parse route destination: %w", err)
 		}
 
-		route := network.RouteSpecSpec{
+		routeSpec := network.RouteSpecSpec{
 			ConfigLayer: network.ConfigPlatform,
 			Destination: dest,
 			Gateway:     gw,
 			OutLinkName: name,
-			Table:       nethelpers.RoutingTable(route.Table),
+			Table:       withDefault(nethelpers.RoutingTable(route.Table), nethelpers.TableMain),
 			Protocol:    nethelpers.ProtocolStatic,
 			Type:        nethelpers.TypeUnicast,
 			Family:      nethelpers.FamilyInet4,
-			Priority:    network.DefaultRouteMetric,
+			Priority:    withDefault(route.Metric, network.DefaultRouteMetric),
 		}
 
 		if gw.Is6() {
-			route.Family = nethelpers.FamilyInet6
-			route.Priority = 2 * network.DefaultRouteMetric
+			routeSpec.Family = nethelpers.FamilyInet6
+
+			if routeSpec.Priority == network.DefaultRouteMetric {
+				routeSpec.Priority = 2 * network.DefaultRouteMetric
+			}
 		}
 
-		route.Normalize()
+		routeSpec.Normalize()
 
-		networkConfig.Routes = append(networkConfig.Routes, route)
+		networkConfig.Routes = append(networkConfig.Routes, routeSpec)
+
+		if route.OnLink && gw.Is4() {
+			// This assumes an interface with multiple routes will never have multiple statically set ips.
+			ipPrefix, err := netip.ParsePrefix(eth.Address[0])
+			if err != nil {
+				return fmt.Errorf("failed to parse route source: %w", err)
+			}
+
+			routeSpec := network.RouteSpecSpec{
+				ConfigLayer: network.ConfigPlatform,
+				Destination: netip.PrefixFrom(gw, gw.BitLen()),
+				Source:      ipPrefix.Addr(),
+				OutLinkName: name,
+				Scope:       nethelpers.ScopeLink,
+				Table:       withDefault(nethelpers.RoutingTable(route.Table), nethelpers.TableMain),
+				Protocol:    nethelpers.ProtocolStatic,
+				Type:        nethelpers.TypeUnicast,
+				Family:      nethelpers.FamilyInet4,
+				Priority:    withDefault(route.Metric, network.DefaultRouteMetric),
+			}
+
+			networkConfig.Routes = append(networkConfig.Routes, routeSpec)
+		}
 	}
 
 	return nil
 }
 
-//nolint:gocyclo
-func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, networkConfig *runtime.PlatformNetworkConfig) error {
-	var dnsIPs []netip.Addr
+//nolint:gocyclo,cyclop
+func (n *Nocloud) applyNetworkConfigV2(ctx context.Context, config *NetworkConfig, st state.State, networkConfig *runtime.PlatformNetworkConfig) (bool, error) {
+	var (
+		dnsIPs         []netip.Addr
+		needsReconcile bool
+	)
 
-	hostInterfaces, err := safe.StateListAll[*network.LinkStatus](context.TODO(), st)
+	hostInterfaces, err := safe.StateListAll[*network.LinkStatus](ctx, st)
 	if err != nil {
-		return fmt.Errorf("error listing host interfaces: %w", err)
+		return false, fmt.Errorf("error listing host interfaces: %w", err)
 	}
 
 	ethernetNames := maps.Keys(config.Ethernets)
-	sort.Strings(ethernetNames)
+	slices.Sort(ethernetNames)
 
 	for _, name := range ethernetNames {
 		eth := config.Ethernets[name]
@@ -578,10 +772,10 @@ func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, ne
 		var bondSlave network.BondSlave
 
 		for bondName, bond := range config.Bonds {
-			for _, iface := range bond.Interfaces {
+			for idx, iface := range bond.Interfaces {
 				if iface == name {
 					bondSlave.MasterName = bondName
-					bondSlave.SlaveIndex = 1
+					bondSlave.SlaveIndex = idx
 				}
 			}
 		}
@@ -590,12 +784,19 @@ func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, ne
 			var availableMACAddresses []string
 
 			macAddressMatched := false
-			hostInterfaceIter := hostInterfaces.Iterator()
 
-			for hostInterfaceIter.Next() {
-				macAddress := hostInterfaceIter.Value().TypedSpec().PermanentAddr.String()
-				if macAddress == eth.Match.HWAddr {
-					name = hostInterfaceIter.Value().Metadata().ID()
+			for hostInterface := range hostInterfaces.All() {
+				if !hostInterface.TypedSpec().Physical() {
+					continue
+				}
+
+				macAddress := hostInterface.TypedSpec().PermanentAddr.String()
+				if macAddress == "" {
+					macAddress = hostInterface.TypedSpec().HardwareAddr.String()
+				}
+
+				if strings.EqualFold(macAddress, eth.Match.HWAddr) {
+					name = hostInterface.Metadata().ID()
 					macAddressMatched = true
 
 					break
@@ -606,6 +807,8 @@ func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, ne
 
 			if !macAddressMatched {
 				log.Printf("nocloud: no link with matching MAC address %q (available %v), defaulted to use name %s instead", eth.Match.HWAddr, availableMACAddresses, name)
+
+				needsReconcile = true
 			}
 		}
 
@@ -619,29 +822,34 @@ func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, ne
 
 		err := applyNetworkConfigV2Ethernet(name, eth, networkConfig, &dnsIPs)
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
 
-	for name, bond := range config.Bonds {
+	bondNames := maps.Keys(config.Bonds)
+	slices.Sort(bondNames)
+
+	for _, bondName := range bondNames {
+		bond := config.Bonds[bondName]
+
 		mode, err := nethelpers.BondModeByName(bond.Params.Mode)
 		if err != nil {
-			return fmt.Errorf("invalid mode: %w", err)
+			return false, fmt.Errorf("invalid mode: %w", err)
 		}
 
 		hashPolicy, err := nethelpers.BondXmitHashPolicyByName(bond.Params.HashPolicy)
 		if err != nil {
-			return fmt.Errorf("invalid transmit-hash-policy: %w", err)
+			return false, fmt.Errorf("invalid transmit-hash-policy: %w", err)
 		}
 
 		lacpRate, err := nethelpers.LACPRateByName(bond.Params.LACPRate)
 		if err != nil {
-			return fmt.Errorf("invalid lacp-rate: %w", err)
+			return false, fmt.Errorf("invalid lacp-rate: %w", err)
 		}
 
 		bondLink := network.LinkSpecSpec{
 			ConfigLayer: network.ConfigPlatform,
-			Name:        name,
+			Name:        bondName,
 			Logical:     true,
 			Up:          true,
 			MTU:         bond.Ethernet.MTU,
@@ -660,9 +868,38 @@ func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, ne
 		networkadapter.BondMasterSpec(&bondLink.BondMaster).FillDefaults()
 		networkConfig.Links = append(networkConfig.Links, bondLink)
 
-		err = applyNetworkConfigV2Ethernet(name, bond.Ethernet, networkConfig, &dnsIPs)
+		err = applyNetworkConfigV2Ethernet(bondName, bond.Ethernet, networkConfig, &dnsIPs)
 		if err != nil {
-			return err
+			return false, err
+		}
+	}
+
+	vlanNames := maps.Keys(config.VLANs)
+	slices.Sort(vlanNames)
+
+	for _, vlanName := range vlanNames {
+		vlan := config.VLANs[vlanName]
+
+		vlanLink := network.LinkSpecSpec{
+			ConfigLayer: network.ConfigPlatform,
+			Name:        vlanName,
+			Logical:     true,
+			Up:          true,
+			MTU:         vlan.Ethernet.MTU,
+			Kind:        network.LinkKindVLAN,
+			Type:        nethelpers.LinkEther,
+			ParentName:  vlan.Link,
+			VLAN: network.VLANSpec{
+				VID:      vlan.ID,
+				Protocol: nethelpers.VLANProtocol8021Q,
+			},
+		}
+
+		networkConfig.Links = append(networkConfig.Links, vlanLink)
+
+		err = applyNetworkConfigV2Ethernet(vlanName, vlan.Ethernet, networkConfig, &dnsIPs)
+		if err != nil {
+			return false, err
 		}
 	}
 
@@ -673,5 +910,15 @@ func (n *Nocloud) applyNetworkConfigV2(config *NetworkConfig, st state.State, ne
 		})
 	}
 
-	return nil
+	return needsReconcile, nil
+}
+
+func withDefault[T comparable](v T, defaultValue T) T {
+	var zeroT T
+
+	if v == zeroT {
+		return defaultValue
+	}
+
+	return v
 }

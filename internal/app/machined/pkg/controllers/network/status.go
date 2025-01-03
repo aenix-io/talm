@@ -76,7 +76,7 @@ func (ctrl *StatusController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo,cyclop
-func (ctrl *StatusController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *StatusController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,8 +105,8 @@ func (ctrl *StatusController) Run(ctx context.Context, r controller.Runtime, log
 
 		allProbesSuccess := true
 
-		for iter := probeStatuses.Iterator(); iter.Next(); {
-			if !iter.Value().TypedSpec().Success {
+		for res := range probeStatuses.All() {
+			if !res.TypedSpec().Success {
 				allProbesSuccess = false
 
 				break
@@ -123,8 +123,8 @@ func (ctrl *StatusController) Run(ctx context.Context, r controller.Runtime, log
 				return fmt.Errorf("error getting routes: %w", err)
 			}
 
-			for iter := routes.Iterator(); iter.Next(); {
-				if value.IsZero(iter.Value().TypedSpec().Destination) {
+			for route := range routes.All() {
+				if value.IsZero(route.TypedSpec().Destination) {
 					result.ConnectivityReady = true
 
 					break

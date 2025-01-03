@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/containerd/containerd"
+	containerd "github.com/containerd/containerd/v2/client"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
@@ -50,17 +50,17 @@ func (c *Containerd) Client() (*containerd.Client, error) {
 }
 
 // ID implements the Service interface.
-func (c *Containerd) ID(r runtime.Runtime) string {
+func (c *Containerd) ID(runtime.Runtime) string {
 	return "containerd"
 }
 
 // PreFunc implements the Service interface.
-func (c *Containerd) PreFunc(ctx context.Context, r runtime.Runtime) error {
+func (c *Containerd) PreFunc(context.Context, runtime.Runtime) error {
 	return nil
 }
 
 // PostFunc implements the Service interface.
-func (c *Containerd) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
+func (c *Containerd) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 	if c.client != nil {
 		return c.client.Close()
 	}
@@ -69,12 +69,12 @@ func (c *Containerd) PostFunc(r runtime.Runtime, state events.ServiceState) (err
 }
 
 // Condition implements the Service interface.
-func (c *Containerd) Condition(r runtime.Runtime) conditions.Condition {
+func (c *Containerd) Condition(runtime.Runtime) conditions.Condition {
 	return nil
 }
 
 // DependsOn implements the Service interface.
-func (c *Containerd) DependsOn(r runtime.Runtime) []string {
+func (c *Containerd) DependsOn(runtime.Runtime) []string {
 	return nil
 }
 
@@ -104,9 +104,15 @@ func (c *Containerd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		debug,
 		args,
 		runner.WithLoggingManager(r.Logging()),
-		runner.WithEnv(environment.Get(r.Config())),
+		runner.WithEnv(append(
+			environment.Get(r.Config()),
+			// append a default value for XDG_RUNTIME_DIR for the services running on the host
+			// see https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+			"XDG_RUNTIME_DIR=/run",
+		)),
 		runner.WithOOMScoreAdj(-999),
 		runner.WithCgroupPath(constants.CgroupSystemRuntime),
+		runner.WithSelinuxLabel(constants.SelinuxLabelSystemRuntime),
 		runner.WithDroppedCapabilities(constants.DefaultDroppedCapabilities),
 	),
 		restart.WithType(restart.Forever),

@@ -13,15 +13,15 @@ import (
 	"fmt"
 	"log"
 	"os/signal"
-	"reflect"
 	"regexp"
+	"slices"
 	"syscall"
 	"time"
 
 	"github.com/cosi-project/runtime/api/v1alpha1"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/protobuf/client"
-	debug "github.com/siderolabs/go-debug"
+	"github.com/siderolabs/go-debug"
 	"github.com/siderolabs/grpc-proxy/proxy"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
@@ -31,6 +31,7 @@ import (
 	apidbackend "github.com/aenix-io/talm/internal/app/apid/pkg/backend"
 	"github.com/aenix-io/talm/internal/app/apid/pkg/director"
 	"github.com/aenix-io/talm/internal/app/apid/pkg/provider"
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/grpc/factory"
 	"github.com/siderolabs/talos/pkg/grpc/middleware/authz"
 	"github.com/siderolabs/talos/pkg/grpc/proxy/backend"
@@ -73,7 +74,7 @@ func apidMain() error {
 
 	startup.LimitMaxProcs(constants.ApidMaxProcs)
 
-	runtimeConn, err := grpc.Dial("unix://"+constants.APIRuntimeSocketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	runtimeConn, err := grpc.NewClient("unix://"+constants.APIRuntimeSocketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("failed to dial runtime connection: %w", err)
 	}
@@ -157,6 +158,10 @@ func apidMain() error {
 		return fmt.Errorf("error creating listner: %w", err)
 	}
 
+	if err = selinux.SetLabel(constants.APISocketPath, constants.APISocketLabel); err != nil {
+		return err
+	}
+
 	networkServer := func() *grpc.Server {
 		mode := authz.Disabled
 		if *rbacEnabled {
@@ -178,7 +183,7 @@ func apidMain() error {
 				grpc.Creds(
 					credentials.NewTLS(serverTLSConfig),
 				),
-				grpc.CustomCodec(proxy.Codec()), //nolint:staticcheck
+				grpc.ForceServerCodecV2(proxy.Codec()),
 				grpc.UnknownServiceHandler(
 					proxy.TransparentHandler(
 						router.Director,
@@ -205,7 +210,7 @@ func apidMain() error {
 			router,
 			factory.WithDefaultLog(),
 			factory.ServerOptions(
-				grpc.CustomCodec(proxy.Codec()), //nolint:staticcheck
+				grpc.ForceServerCodecV2(proxy.Codec()),
 				grpc.UnknownServiceHandler(
 					proxy.TransparentHandler(
 						router.Director,
@@ -248,7 +253,7 @@ func apidMain() error {
 	return errGroup.Wait()
 }
 
-func verifyExtKeyUsage(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+func verifyExtKeyUsage(_ [][]byte, verifiedChains [][]*x509.Certificate) error {
 	if len(verifiedChains) == 0 {
 		return errors.New("no verified chains")
 	}
@@ -260,7 +265,7 @@ func verifyExtKeyUsage(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) 
 			continue
 		}
 
-		if !reflect.DeepEqual(cert.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}) {
+		if !slices.Equal(cert.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}) {
 			return fmt.Errorf("certificate %q is missing the client auth extended key usage", cert.Subject)
 		}
 	}

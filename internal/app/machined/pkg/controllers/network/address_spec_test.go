@@ -8,8 +8,7 @@ package network_test
 import (
 	"context"
 	"fmt"
-	"log"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
@@ -22,13 +21,13 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
-	"github.com/jsimonetti/rtnetlink"
+	"github.com/jsimonetti/rtnetlink/v2"
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 	"golang.org/x/sys/unix"
 
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 )
@@ -52,7 +51,7 @@ func (suite *AddressSpecSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.runtime.RegisterController(&netctrl.AddressSpecController{}))
@@ -61,7 +60,7 @@ func (suite *AddressSpecSuite) SetupTest() {
 }
 
 func (suite *AddressSpecSuite) uniqueDummyInterface() string {
-	return fmt.Sprintf("dummy%02x%02x%02x", rand.Int31()&0xff, rand.Int31()&0xff, rand.Int31()&0xff)
+	return fmt.Sprintf("dummy%02x%02x%02x", rand.Int32()&0xff, rand.Int32()&0xff, rand.Int32()&0xff)
 }
 
 func (suite *AddressSpecSuite) startRuntime() {
@@ -237,6 +236,74 @@ func (suite *AddressSpecSuite) TestDummy() {
 
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (suite *AddressSpecSuite) TestDummyAlias() {
+	dummyInterface := suite.uniqueDummyInterface()
+	dummyAlias := suite.uniqueDummyInterface()
+
+	suite.T().Logf("dummyInterface: %s, dummyAlias: %s", dummyInterface, dummyAlias)
+
+	conn, err := rtnetlink.Dial(nil)
+	suite.Require().NoError(err)
+
+	defer conn.Close() //nolint:errcheck
+
+	dummy := network.NewAddressSpec(network.NamespaceName, "dummy/10.0.0.5/8")
+	*dummy.TypedSpec() = network.AddressSpecSpec{
+		Address:     netip.MustParsePrefix("10.0.0.5/8"),
+		LinkName:    dummyAlias, // use alias name instead of the actual interface name
+		Family:      nethelpers.FamilyInet4,
+		Scope:       nethelpers.ScopeGlobal,
+		ConfigLayer: network.ConfigDefault,
+		Flags:       nethelpers.AddressFlags(nethelpers.AddressPermanent),
+	}
+
+	// it's fine to create the address before the interface is actually created
+	for _, res := range []resource.Resource{dummy} {
+		suite.Require().NoError(suite.state.Create(suite.ctx, res), "%v", res.Spec())
+	}
+
+	// create dummy interface
+	suite.Require().NoError(
+		conn.Link.New(
+			&rtnetlink.LinkMessage{
+				Type: unix.ARPHRD_ETHER,
+				Attributes: &rtnetlink.LinkAttributes{
+					Name: dummyInterface,
+					MTU:  1400,
+					Info: &rtnetlink.LinkInfo{
+						Kind: "dummy",
+					},
+				},
+			},
+		),
+	)
+
+	iface, err := net.InterfaceByName(dummyInterface)
+	suite.Require().NoError(err)
+
+	// set alias name
+	suite.Require().NoError(
+		conn.Link.Set(
+			&rtnetlink.LinkMessage{
+				Index: uint32(iface.Index),
+				Attributes: &rtnetlink.LinkAttributes{
+					Alias: &dummyAlias,
+				},
+			},
+		),
+	)
+
+	defer conn.Link.Delete(uint32(iface.Index)) //nolint:errcheck
+
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertLinkAddress(dummyInterface, "10.0.0.5/8")
+			},
+		),
+	)
 }
 
 func (suite *AddressSpecSuite) TearDownTest() {

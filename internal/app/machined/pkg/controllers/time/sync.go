@@ -17,6 +17,7 @@ import (
 	"github.com/siderolabs/gen/optional"
 	"go.uber.org/zap"
 
+	"github.com/aenix-io/talm/internal/app/machined/pkg/controllers/runtime"
 	v1alpha1runtime "github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/pkg/ntp"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
@@ -39,19 +40,7 @@ func (ctrl *SyncController) Name() string {
 
 // Inputs implements controller.Controller interface.
 func (ctrl *SyncController) Inputs() []controller.Input {
-	return []controller.Input{
-		{
-			Namespace: network.NamespaceName,
-			Type:      network.TimeServerStatusType,
-			ID:        optional.Some(network.TimeServerID),
-			Kind:      controller.InputWeak,
-		},
-		{
-			Namespace: config.NamespaceName,
-			Type:      config.MachineConfigType,
-			ID:        optional.Some(config.V1Alpha1ID),
-		},
-	}
+	return nil
 }
 
 // Outputs implements controller.Controller interface.
@@ -87,6 +76,25 @@ func (ctrl *SyncController) Run(ctx context.Context, r controller.Runtime, logge
 		ctrl.NewNTPSyncer = func(logger *zap.Logger, timeServers []string) NTPSyncer {
 			return ntp.NewSyncer(logger, timeServers)
 		}
+	}
+
+	// wait for udevd to be healthy, which implies that all RTC devices
+	if err := runtime.WaitForDevicesReady(ctx, r,
+		[]controller.Input{
+			{
+				Namespace: network.NamespaceName,
+				Type:      network.TimeServerStatusType,
+				ID:        optional.Some(network.TimeServerID),
+				Kind:      controller.InputWeak,
+			},
+			{
+				Namespace: config.NamespaceName,
+				Type:      config.MachineConfigType,
+				ID:        optional.Some(config.V1Alpha1ID),
+			},
+		},
+	); err != nil {
+		return err
 	}
 
 	var (
@@ -132,7 +140,11 @@ func (ctrl *SyncController) Run(ctx context.Context, r controller.Runtime, logge
 			timeSyncTimeoutTimer = nil
 		}
 
-		timeServersStatus, err := r.Get(ctx, resource.NewMetadata(network.NamespaceName, network.TimeServerStatusType, network.TimeServerID, resource.VersionUndefined))
+		timeServersStatus, err := safe.ReaderGet[*network.TimeServerStatus](
+			ctx,
+			r,
+			resource.NewMetadata(network.NamespaceName, network.TimeServerStatusType, network.TimeServerID, resource.VersionUndefined),
+		)
 		if err != nil {
 			if !state.IsNotFoundError(err) {
 				return fmt.Errorf("error getting time server status: %w", err)
@@ -142,7 +154,7 @@ func (ctrl *SyncController) Run(ctx context.Context, r controller.Runtime, logge
 			continue
 		}
 
-		timeServers := timeServersStatus.(*network.TimeServerStatus).TypedSpec().NTPServers
+		timeServers := timeServersStatus.TypedSpec().NTPServers
 
 		cfg, err := safe.ReaderGetByID[*config.MachineConfig](ctx, r, config.V1Alpha1ID)
 		if err != nil {
@@ -208,7 +220,7 @@ func (ctrl *SyncController) Run(ctx context.Context, r controller.Runtime, logge
 
 			timeSynced = false
 
-			syncCtx, syncCtxCancel = context.WithCancel(ctx) //nolint:govet
+			syncCtx, syncCtxCancel = context.WithCancel(ctx) //nolint:govet,fatcontext
 
 			syncWg.Add(1)
 
@@ -227,8 +239,8 @@ func (ctrl *SyncController) Run(ctx context.Context, r controller.Runtime, logge
 			timeSynced = true
 		}
 
-		if err = r.Modify(ctx, time.NewStatus(), func(r resource.Resource) error {
-			*r.(*time.Status).TypedSpec() = time.StatusSpec{
+		if err = safe.WriterModify(ctx, r, time.NewStatus(), func(r *time.Status) error {
+			*r.TypedSpec() = time.StatusSpec{
 				Epoch:        epoch,
 				Synced:       timeSynced,
 				SyncDisabled: syncDisabled,

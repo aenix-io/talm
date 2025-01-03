@@ -17,7 +17,7 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/controllers/ctest"
 	hardwarectrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/hardware"
 	runtimetalos "github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
-	"github.com/aenix-io/talm/internal/pkg/meta"
+	"github.com/siderolabs/talos/pkg/machinery/meta"
 	"github.com/siderolabs/talos/pkg/machinery/resources/hardware"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )

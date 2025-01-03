@@ -161,7 +161,7 @@ func (ctrl *EventsSinkController) Run(ctx context.Context, r controller.Runtime,
 			// establish connection
 			logger.Debug("establishing connection to event sink", zap.String("endpoint", cfg.TypedSpec().Endpoint))
 
-			conn, err = grpc.Dial(
+			conn, err = grpc.NewClient(
 				cfg.TypedSpec().Endpoint,
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 				grpc.WithSharedWriteBuffer(true),
@@ -178,7 +178,8 @@ func (ctrl *EventsSinkController) Run(ctx context.Context, r controller.Runtime,
 			if watchCh == nil {
 				watchCh = make(chan machinedruntime.EventInfo)
 
-				opts := []machinedruntime.WatchOptionFunc{}
+				var opts []machinedruntime.WatchOptionFunc
+
 				if ctrl.eventID.IsNil() {
 					opts = append(opts, machinedruntime.WithTailEvents(-1))
 				} else {

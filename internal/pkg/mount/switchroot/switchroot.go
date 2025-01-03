@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+// Package switchroot provides the switching root filesystem functionality.
 package switchroot
 
 import (
@@ -11,11 +12,13 @@ import (
 	"path/filepath"
 
 	"github.com/siderolabs/go-debug"
+	"github.com/siderolabs/go-procfs/procfs"
 	"golang.org/x/sys/unix"
 
-	"github.com/aenix-io/talm/internal/pkg/mount"
+	"github.com/aenix-io/talm/internal/pkg/mount/v2"
 	"github.com/aenix-io/talm/internal/pkg/secureboot"
 	"github.com/aenix-io/talm/internal/pkg/secureboot/tpm2"
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
@@ -28,10 +31,12 @@ var preservedPaths = map[string]struct{}{
 
 // Switch moves the rootfs to a specified directory. See
 // https://github.com/karelzak/util-linux/blob/master/sys-utils/switch_root.c.
-func Switch(prefix string, mountpoints *mount.Points) (err error) {
+//
+//nolint:gocyclo
+func Switch(prefix string, mountpoints mount.Points) (err error) {
 	log.Println("moving mounts to the new rootfs")
 
-	if err = mount.Move(mountpoints, prefix); err != nil {
+	if err = mountpoints.Move(prefix); err != nil {
 		return err
 	}
 
@@ -68,8 +73,12 @@ func Switch(prefix string, mountpoints *mount.Points) (err error) {
 		return fmt.Errorf("error deleting initramfs: %w", err)
 	}
 
+	if err := selinux.Init(); err != nil {
+		return err
+	}
+
 	// extend PCR 11 with leave-initrd
-	if err = tpm2.PCRExtent(secureboot.UKIPCR, []byte(secureboot.LeaveInitrd)); err != nil {
+	if err = tpm2.PCRExtend(secureboot.UKIPCR, []byte(secureboot.LeaveInitrd)); err != nil {
 		return fmt.Errorf("failed to extend PCR %d with leave-initrd: %v", secureboot.UKIPCR, err)
 	}
 
@@ -78,6 +87,7 @@ func Switch(prefix string, mountpoints *mount.Points) (err error) {
 	log.Println("executing /sbin/init")
 
 	envv := []string{
+		"GRPC_ENFORCE_ALPN_ENABLED=false",
 		constants.TcellMinimizeEnvironment,
 	}
 
@@ -85,6 +95,14 @@ func Switch(prefix string, mountpoints *mount.Points) (err error) {
 		envv = append(envv, "GORACE=halt_on_error=1")
 
 		log.Printf("race detection enabled with halt_on_error=1")
+	}
+
+	if val := procfs.ProcCmdline().Get("talos.debugshell"); val != nil {
+		if err = unix.Exec("/bin/bash", []string{"/bin/bash"}, envv); err != nil {
+			return fmt.Errorf("error executing /bin/bash: %w", err)
+		}
+
+		return nil
 	}
 
 	if err = unix.Exec("/sbin/init", []string{"/sbin/init"}, envv); err != nil {
@@ -128,7 +146,7 @@ func recusiveDeleteInner(parentFd int, parentDev uint64, childName, path string)
 		return preserved, nil
 	}
 
-	childFd, err := unix.Openat(parentFd, childName, unix.O_DIRECTORY|unix.O_NOFOLLOW, unix.O_RDWR)
+	childFd, err := unix.Openat(parentFd, childName, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, unix.O_RDWR)
 	if err != nil {
 		return false, unix.Unlinkat(parentFd, childName, 0)
 	}

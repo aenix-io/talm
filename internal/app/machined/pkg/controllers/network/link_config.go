@@ -11,6 +11,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/maps"
 	"github.com/siderolabs/gen/pair/ordered"
@@ -182,27 +183,42 @@ func (ctrl *LinkConfigController) Run(ctx context.Context, r controller.Runtime,
 			return fmt.Errorf("error listing link statuses: %w", err)
 		}
 
+	outer:
 		for _, item := range list.Items {
-			linkStatus := item.(*network.LinkStatus) //nolint:errcheck,forcetypeassert
+			linkStatus := item.(*network.LinkStatus) //nolint:forcetypeassert
 
-			if _, configured := configuredLinks[linkStatus.Metadata().ID()]; !configured {
-				if linkStatus.TypedSpec().Physical() {
-					var ids []string
+			if _, configured := configuredLinks[linkStatus.Metadata().ID()]; configured {
+				continue
+			}
 
-					ids, err = ctrl.apply(ctx, r, []network.LinkSpecSpec{
-						{
-							Name:        linkStatus.Metadata().ID(),
-							Up:          true,
-							ConfigLayer: network.ConfigDefault,
-						},
-					})
-					if err != nil {
-						return fmt.Errorf("error applying default link up: %w", err)
-					}
+			if linkStatus.TypedSpec().Alias != "" {
+				if _, configured := configuredLinks[linkStatus.TypedSpec().Alias]; configured {
+					continue
+				}
+			}
 
-					for _, id := range ids {
-						touchedIDs[id] = struct{}{}
-					}
+			for _, altName := range linkStatus.TypedSpec().AltNames {
+				if _, configured := configuredLinks[altName]; configured {
+					continue outer
+				}
+			}
+
+			if linkStatus.TypedSpec().Physical() {
+				var ids []string
+
+				ids, err = ctrl.apply(ctx, r, []network.LinkSpecSpec{
+					{
+						Name:        linkStatus.Metadata().ID(),
+						Up:          true,
+						ConfigLayer: network.ConfigDefault,
+					},
+				})
+				if err != nil {
+					return fmt.Errorf("error applying default link up: %w", err)
+				}
+
+				for _, id := range ids {
+					touchedIDs[id] = struct{}{}
 				}
 			}
 		}
@@ -236,11 +252,12 @@ func (ctrl *LinkConfigController) apply(ctx context.Context, r controller.Runtim
 	for _, link := range links {
 		id := network.LayeredID(link.ConfigLayer, network.LinkID(link.Name))
 
-		if err := r.Modify(
+		if err := safe.WriterModify(
 			ctx,
+			r,
 			network.NewLinkSpec(network.ConfigNamespaceName, id),
-			func(r resource.Resource) error {
-				*r.(*network.LinkSpec).TypedSpec() = link
+			func(r *network.LinkSpec) error {
+				*r.TypedSpec() = link
 
 				return nil
 			},
@@ -280,18 +297,16 @@ func (ctrl *LinkConfigController) processDevicesConfiguration(logger *zap.Logger
 			continue
 		}
 
-		if device.Bond() == nil && device.Bridge() == nil {
-			continue
-		}
-
 		if device.Bond() != nil {
 			for idx, linkName := range device.Bond().Interfaces() {
 				if bondData, exists := bondedLinks[linkName]; exists && bondData.F1 != device.Interface() {
-					logger.Sugar().Warnf("link %q is included into more than two bonds", linkName)
+					logger.Sugar().Warnf("link %q is included in both bonds %q and %q", linkName,
+						bondData.F1, device.Interface())
 				}
 
-				if bridgeIface, exists := bridgedLinks[linkName]; exists && bridgeIface != device.Interface() {
-					logger.Sugar().Warnf("link %q is included into both a bond and a bridge", linkName)
+				if bridgeName, exists := bridgedLinks[linkName]; exists {
+					logger.Sugar().Warnf("link %q is included in both bond %q and bridge %q", linkName,
+						bridgeName, device.Interface())
 				}
 
 				bondedLinks[linkName] = ordered.MakePair(device.Interface(), idx)
@@ -300,16 +315,32 @@ func (ctrl *LinkConfigController) processDevicesConfiguration(logger *zap.Logger
 
 		if device.Bridge() != nil {
 			for _, linkName := range device.Bridge().Interfaces() {
-				if iface, exists := bridgedLinks[linkName]; exists && iface != device.Interface() {
-					logger.Sugar().Warnf("link %q is included into more than two bridges", linkName)
+				if bridgeName, exists := bridgedLinks[linkName]; exists && bridgeName != device.Interface() {
+					logger.Sugar().Warnf("link %q is included in both bridges %q and %q", linkName,
+						bridgeName, device.Interface())
 				}
 
-				if bondData, exists := bondedLinks[linkName]; exists && bondData.F1 != device.Interface() {
-					logger.Sugar().Warnf("link %q is included into both a bond and a bridge", linkName)
+				if bondData, exists := bondedLinks[linkName]; exists {
+					logger.Sugar().Warnf("link %q is included in both bond %q and bridge %q", linkName,
+						bondData.F1, device.Interface())
 				}
 
 				bridgedLinks[linkName] = device.Interface()
 			}
+		}
+
+		if device.BridgePort() != nil {
+			if bridgeName, exists := bridgedLinks[device.Interface()]; exists && bridgeName != device.BridgePort().Master() {
+				logger.Sugar().Warnf("link %q is included in both bridges %q and %q", device.Interface(),
+					bridgeName, device.BridgePort().Master())
+			}
+
+			if bondData, exists := bondedLinks[device.Interface()]; exists {
+				logger.Sugar().Warnf("link %q is included into both bond %q and bridge %q", device.Interface(),
+					bondData.F1, device.BridgePort().Master())
+			}
+
+			bridgedLinks[device.Interface()] = device.BridgePort().Master()
 		}
 	}
 

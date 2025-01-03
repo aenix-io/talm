@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/siderolabs/go-cmd/pkg/cmd/proc/reaper"
 	debug "github.com/siderolabs/go-debug"
 	"github.com/siderolabs/go-procfs/procfs"
+	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
 	"github.com/aenix-io/talm/internal/app/apid"
@@ -29,13 +31,13 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/emergency"
 	v1alpha1runtime "github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1"
+	startuptasks "github.com/aenix-io/talm/internal/app/machined/pkg/startup"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/services"
 	"github.com/aenix-io/talm/internal/app/maintenance"
 	"github.com/aenix-io/talm/internal/app/poweroff"
 	"github.com/aenix-io/talm/internal/app/trustd"
-	"github.com/aenix-io/talm/internal/app/wrapperd"
-	"github.com/aenix-io/talm/internal/pkg/mount"
+	"github.com/aenix-io/talm/internal/pkg/mount/v2"
 	"github.com/siderolabs/talos/pkg/httpdefaults"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -118,12 +120,12 @@ func handle(ctx context.Context, err error) {
 				rebootCmd = 0
 			}
 		}
-	}
 
-	if rebootCmd == unix.LINUX_REBOOT_CMD_RESTART {
-		for i := 10; i >= 0; i-- {
-			log.Printf("rebooting in %d seconds\n", i)
-			time.Sleep(1 * time.Second)
+		if rebootCmd == unix.LINUX_REBOOT_CMD_RESTART {
+			for i := 10; i >= 0; i-- {
+				log.Printf("rebooting in %d seconds\n", i)
+				time.Sleep(1 * time.Second)
+			}
 		}
 	}
 
@@ -161,17 +163,9 @@ func runDebugServer(ctx context.Context) {
 	}
 }
 
-//nolint:gocyclo
 func run() error {
-	errCh := make(chan error)
-
 	// Limit GOMAXPROCS.
 	startup.LimitMaxProcs(constants.MachinedMaxProcs)
-
-	// Set the PATH env var.
-	if err := os.Setenv("PATH", constants.PATH); err != nil {
-		return errors.New("error setting PATH")
-	}
 
 	// Initialize the controller without a config.
 	c, err := v1alpha1runtime.NewController()
@@ -179,7 +173,37 @@ func run() error {
 		return err
 	}
 
+	revertSetState(c.Runtime().State().V1Alpha2().Resources())
+
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger, err := c.V1Alpha2().MakeLogger("early-startup")
+	if err != nil {
+		return err
+	}
+
+	start := time.Now()
+
+	// Run startup tasks, and then run the entrypoint.
+	return startuptasks.RunTasks(ctx, logger, c.Runtime(), append(
+		startuptasks.DefaultTasks(),
+		func(ctx context.Context, log *zap.Logger, _ runtime.Runtime, _ startuptasks.NextTaskFunc) error {
+			logger.Info("early startup done", zap.Duration("duration", time.Since(start)))
+
+			return runEntrypoint(ctx, c)
+		},
+	)...)
+}
+
+//nolint:gocyclo
+func runEntrypoint(ctx context.Context, c *v1alpha1runtime.Controller) error {
+	errCh := make(chan error)
+
+	var controllerWaitGroup sync.WaitGroup
+	defer controllerWaitGroup.Wait() // wait for controller-runtime to finish before rebooting
+
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	drainer := runtime.NewDrainer()
@@ -204,8 +228,12 @@ func run() error {
 		}
 	}()
 
+	controllerWaitGroup.Add(1)
+
 	// Start v2 controller runtime.
 	go func() {
+		defer controllerWaitGroup.Done()
+
 		if e := c.V1Alpha2().Run(ctx, drainer); e != nil {
 			ctrlErr := fmt.Errorf("fatal controller runtime error: %s", e)
 
@@ -228,7 +256,7 @@ func run() error {
 	initializeCanceled := false
 
 	// Initialize the machine.
-	if err = c.Run(ctx, runtime.SequenceInitialize, nil); err != nil {
+	if err := c.Run(ctx, runtime.SequenceInitialize, nil); err != nil {
 		if errors.Is(err, context.Canceled) {
 			initializeCanceled = true
 		} else {
@@ -239,7 +267,7 @@ func run() error {
 	// If Initialize sequence was canceled, don't run any other sequence.
 	if !initializeCanceled {
 		// Perform an installation if required.
-		if err = c.Run(ctx, runtime.SequenceInstall, nil); err != nil {
+		if err := c.Run(ctx, runtime.SequenceInstall, nil); err != nil {
 			return err
 		}
 
@@ -249,7 +277,7 @@ func run() error {
 		)
 
 		// Boot the machine.
-		if err = c.Run(ctx, runtime.SequenceBoot, nil); err != nil && !errors.Is(err, context.Canceled) {
+		if err := c.Run(ctx, runtime.SequenceBoot, nil); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 	}
@@ -302,10 +330,6 @@ func main() {
 	// Azure uses the hv_utils kernel module to shutdown the node in hyper-v by calling perform_shutdown which will call orderly_poweroff which will call /sbin/poweroff.
 	case "poweroff", "shutdown":
 		poweroff.Main(os.Args)
-
-		return
-	case "wrapperd":
-		wrapperd.Main()
 
 		return
 	case "dashboard":

@@ -7,8 +7,7 @@ package network_test
 
 import (
 	"context"
-	"log"
-	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -20,9 +19,9 @@ import (
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 )
@@ -46,7 +45,7 @@ func (suite *TimeServerSpecSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.runtime.RegisterController(&netctrl.TimeServerSpecController{}))
@@ -77,9 +76,9 @@ func (suite *TimeServerSpecSuite) assertStatus(id string, servers ...string) err
 		return err
 	}
 
-	status := r.(*network.TimeServerStatus) //nolint:errcheck,forcetypeassert
+	status := r.(*network.TimeServerStatus) //nolint:forcetypeassert
 
-	if !reflect.DeepEqual(status.TypedSpec().NTPServers, servers) {
+	if !slices.Equal(status.TypedSpec().NTPServers, servers) {
 		return retry.ExpectedErrorf("server list mismatch: %q != %q", status.TypedSpec().NTPServers, servers)
 	}
 

@@ -7,7 +7,6 @@ package network_test
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/netip"
 	"sync"
 	"testing"
@@ -21,11 +20,11 @@ import (
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/controllers/ctest"
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network/operator"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 )
@@ -142,7 +141,7 @@ func (mock *mockOperator) TimeServerSpecs() []network.TimeServerSpecSpec {
 	return mock.timeservers
 }
 
-func (suite *OperatorSpecSuite) newOperator(logger *zap.Logger, spec *network.OperatorSpecSpec) operator.Operator {
+func (suite *OperatorSpecSuite) newOperator(_ *zap.Logger, spec *network.OperatorSpecSpec) operator.Operator {
 	return &mockOperator{
 		spec: *spec,
 	}
@@ -155,7 +154,7 @@ func (suite *OperatorSpecSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	runningOperators = map[string]*mockOperator{}
@@ -312,7 +311,8 @@ func (suite *OperatorSpecSuite) TestScheduling() {
 		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
 			func() error {
 				return suite.assertRunning(
-					[]string{"dhcp4/eth0", "vip/eth0"}, func(op *mockOperator) error {
+					[]string{"dhcp4/eth0", "vip/eth0"},
+					func(op *mockOperator) error {
 						switch op.spec.Operator { //nolint:exhaustive
 						case network.OperatorDHCP4:
 							suite.Assert().EqualValues(1024, op.spec.DHCP4.RouteMetric)
@@ -340,7 +340,8 @@ func (suite *OperatorSpecSuite) TestScheduling() {
 		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
 			func() error {
 				return suite.assertRunning(
-					[]string{"dhcp4/eth0", "vip/eth0"}, func(op *mockOperator) error {
+					[]string{"dhcp4/eth0", "vip/eth0"},
+					func(op *mockOperator) error {
 						switch op.spec.Operator { //nolint:exhaustive
 						case network.OperatorDHCP4:
 							suite.Assert().EqualValues(1024, op.spec.DHCP4.RouteMetric)

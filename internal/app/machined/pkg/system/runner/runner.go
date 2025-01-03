@@ -6,15 +6,18 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"time"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/oci"
+	containerd "github.com/containerd/containerd/v2/client"
+	ocicontainers "github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/gen/maps"
 	"github.com/siderolabs/gen/optional"
+	"github.com/siderolabs/go-pointer"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/logging"
@@ -35,6 +38,12 @@ type Runner interface {
 type Args struct {
 	ID          string
 	ProcessArgs []string
+}
+
+// IOPriorityParam represents the combination of IO scheduling class and priority.
+type IOPriorityParam struct {
+	Class    uint
+	Priority uint
 }
 
 // Options is the functional options struct.
@@ -67,6 +76,8 @@ type Options struct {
 	OverrideSeccompProfile func(*specs.LinuxSeccomp)
 	// DroppedCapabilities is the list of capabilities to drop.
 	DroppedCapabilities []string
+	// SelinuxLabel is the SELinux label to be assigned
+	SelinuxLabel string
 	// StdinFile is the path to the file to use as stdin.
 	StdinFile string
 	// StdoutFile is the path to the file to use as stdout.
@@ -77,6 +88,12 @@ type Options struct {
 	Ctty optional.Optional[int]
 	// UID is the user id of the process.
 	UID uint32
+	// Priority is the niceness value of the process.
+	Priority int
+	// IOPriority is the IO priority value and class of the process.
+	IOPriority optional.Optional[IOPriorityParam]
+	// SchedulingPolicy is the scheduling policy of the process.
+	SchedulingPolicy optional.Optional[uint]
 }
 
 // Option is the functional option func.
@@ -172,6 +189,13 @@ func WithCgroupPath(path string) Option {
 	}
 }
 
+// WithSelinuxLabel sets the SELinux label.
+func WithSelinuxLabel(label string) Option {
+	return func(args *Options) {
+		args.SelinuxLabel = label
+	}
+}
+
 // WithCustomSeccompProfile sets the function to override seccomp profile.
 func WithCustomSeccompProfile(override func(*specs.LinuxSeccomp)) Option {
 	return func(args *Options) {
@@ -218,5 +242,74 @@ func WithCtty(ctty int) Option {
 func WithUID(uid uint32) Option {
 	return func(args *Options) {
 		args.UID = uid
+	}
+}
+
+// WithMemoryReservation sets the memory reservation limit as on OCI spec.
+func WithMemoryReservation(limit uint64) oci.SpecOpts {
+	return func(_ context.Context, _ oci.Client, _ *ocicontainers.Container, s *oci.Spec) error {
+		if s.Linux.Resources == nil {
+			s.Linux.Resources = &specs.LinuxResources{}
+		}
+
+		if s.Linux.Resources.Memory == nil {
+			s.Linux.Resources.Memory = &specs.LinuxMemory{}
+		}
+
+		s.Linux.Resources.Memory.Reservation = pointer.To(int64(limit))
+
+		return nil
+	}
+}
+
+// WithPriority sets the priority of the process.
+func WithPriority(priority int) Option {
+	return func(args *Options) {
+		args.Priority = priority
+	}
+}
+
+const (
+	// IoprioClassNone represents IOPRIO_CLASS_NONE.
+	IoprioClassNone = iota
+	// IoprioClassRt represents IOPRIO_CLASS_RT.
+	IoprioClassRt
+	// IoprioClassBe represents IOPRIO_CLASS_BE.
+	IoprioClassBe
+	// IoprioClassIdle represents IOPRIO_CLASS_IDLE.
+	IoprioClassIdle
+)
+
+// WithIOPriority sets the IO priority and class of the process.
+func WithIOPriority(class, priority uint) Option {
+	return func(args *Options) {
+		args.IOPriority = optional.Some(IOPriorityParam{
+			Class:    class,
+			Priority: priority,
+		})
+	}
+}
+
+const (
+	// SchedulingPolicyNormal represents SCHED_NORMAL.
+	SchedulingPolicyNormal = iota
+	// SchedulingPolicyFIFO represents SCHED_FIFO.
+	SchedulingPolicyFIFO
+	// SchedulingPolicyRR represents SCHED_RR.
+	SchedulingPolicyRR
+	// SchedulingPolicyBatch represents SCHED_BATCH.
+	SchedulingPolicyBatch
+	// SchedulingPolicyIsoUnimplemented represents SCHED_ISO.
+	SchedulingPolicyIsoUnimplemented
+	// SchedulingPolicyIdle represents SCHED_IDLE.
+	SchedulingPolicyIdle
+	// SchedulingPolicyDeadline represents SCHED_DEADLINE.
+	SchedulingPolicyDeadline
+)
+
+// WithSchedulingPolicy sets the scheduling policy of the process.
+func WithSchedulingPolicy(policy uint) Option {
+	return func(args *Options) {
+		args.SchedulingPolicy = optional.Some(policy)
 	}
 }

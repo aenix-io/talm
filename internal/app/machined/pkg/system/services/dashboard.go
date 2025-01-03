@@ -8,6 +8,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/events"
@@ -61,14 +62,17 @@ func (d *Dashboard) Runner(r runtime.Runtime) (runner.Runner, error) {
 		runner.WithEnv([]string{
 			"TERM=linux",
 			constants.TcellMinimizeEnvironment,
+			"GOMEMLIMIT=" + strconv.Itoa(constants.CgroupDashboardMaxMemory/5*4),
 		}),
 		runner.WithStdinFile(tty),
 		runner.WithStdoutFile(tty),
-		runner.WithCtty(1),
+		runner.WithCtty(0),
 		runner.WithOOMScoreAdj(-400),
 		runner.WithDroppedCapabilities(capability.AllCapabilitiesSetLowercase()),
+		runner.WithSelinuxLabel(constants.SelinuxLabelDashboard),
 		runner.WithCgroupPath(constants.CgroupDashboard),
 		runner.WithUID(constants.DashboardUserID),
+		runner.WithPriority(constants.DashboardPriority),
 	),
 		restart.WithType(restart.Forever),
 	), nil

@@ -6,7 +6,7 @@ package components
 
 import (
 	"net/netip"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/cosi-project/runtime/pkg/resource"
@@ -197,11 +197,9 @@ func (widget *NetworkInfo) setAddresses(data resourcedata.Data, nodeAddress *net
 			return notAvailable
 		}
 
-		strs := xslices.Map(res.TypedSpec().Addresses, func(prefix netip.Prefix) string {
-			return prefix.String()
-		})
+		strs := xslices.Map(res.TypedSpec().Addresses, netip.Prefix.String)
 
-		sort.Strings(strs)
+		slices.Sort(strs)
 
 		return strings.Join(strs, ", ")
 	}
@@ -238,16 +236,14 @@ func (widget *NetworkInfo) gateway(statuses []*network.RouteStatus) string {
 		return notAvailable
 	}
 
-	sort.Strings(gatewaysV4)
-	sort.Strings(gatewaysV6)
+	slices.Sort(gatewaysV4)
+	slices.Sort(gatewaysV6)
 
 	return strings.Join(append(gatewaysV4, gatewaysV6...), ", ")
 }
 
 func (widget *NetworkInfo) resolvers(status *network.ResolverStatus) string {
-	strs := xslices.Map(status.TypedSpec().DNSServers, func(t netip.Addr) string {
-		return t.String()
-	})
+	strs := xslices.Map(status.TypedSpec().DNSServers, netip.Addr.String)
 
 	if len(strs) == 0 {
 		return none
@@ -266,8 +262,8 @@ func (widget *NetworkInfo) timeservers(status *network.TimeServerStatus) string 
 
 func (widget *NetworkInfo) connectivity(status *network.Status) string {
 	if status.TypedSpec().ConnectivityReady {
-		return "[green]OK[-]"
+		return "[green]√ OK[-]"
 	}
 
-	return "[red]FAILED[-]"
+	return "[red]× FAILED[-]"
 }

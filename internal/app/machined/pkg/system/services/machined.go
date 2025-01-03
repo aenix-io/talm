@@ -23,6 +23,7 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/health"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner/goroutine"
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/grpc/factory"
 	"github.com/siderolabs/talos/pkg/grpc/middleware/authz"
@@ -40,6 +41,7 @@ var rules = map[string]role.Set{
 	"/machine.MachineService/ApplyConfiguration":          role.MakeSet(role.Admin),
 	"/machine.MachineService/Bootstrap":                   role.MakeSet(role.Admin),
 	"/machine.MachineService/CPUInfo":                     role.MakeSet(role.Admin, role.Operator, role.Reader),
+	"/machine.MachineService/CPUFreqStats":                role.MakeSet(role.Admin, role.Operator, role.Reader),
 	"/machine.MachineService/Containers":                  role.MakeSet(role.Admin, role.Operator, role.Reader),
 	"/machine.MachineService/Copy":                        role.MakeSet(role.Admin),
 	"/machine.MachineService/DiskStats":                   role.MakeSet(role.Admin, role.Operator, role.Reader),
@@ -97,7 +99,8 @@ var rules = map[string]role.Set{
 	"/cosi.resource.State/Update":  role.MakeSet(role.Admin),
 	"/cosi.resource.State/Watch":   role.MakeSet(role.Admin, role.Operator, role.Reader),
 
-	"/storage.StorageService/Disks": role.MakeSet(role.Admin, role.Operator, role.Reader),
+	"/storage.StorageService/Disks":           role.MakeSet(role.Admin, role.Operator, role.Reader),
+	"/storage.StorageService/BlockDeviceWipe": role.MakeSet(role.Admin),
 
 	"/time.TimeService/Time":      role.MakeSet(role.Admin, role.Operator, role.Reader),
 	"/time.TimeService/TimeCheck": role.MakeSet(role.Admin, role.Operator, role.Reader),
@@ -108,7 +111,7 @@ type machinedService struct {
 }
 
 // Main is an entrypoint to the API service.
-func (s *machinedService) Main(ctx context.Context, r runtime.Runtime, logWriter io.Writer) error {
+func (s *machinedService) Main(ctx context.Context, _ runtime.Runtime, logWriter io.Writer) error {
 	injector := &authz.Injector{
 		Mode: authz.MetadataOnly,
 	}
@@ -160,24 +163,35 @@ func (s *machinedService) Main(ctx context.Context, r runtime.Runtime, logWriter
 		return err
 	}
 
+	if err := selinux.SetLabel(constants.MachineSocketPath, constants.MachineSocketLabel); err != nil {
+		return err
+	}
+
 	// chown the socket path to make it accessible to the apid
 	if err := os.Chown(constants.MachineSocketPath, constants.ApidUserID, constants.ApidUserID); err != nil {
 		return err
 	}
 
-	go func() {
-		//nolint:errcheck
-		server.Serve(listener)
-	}()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	<-ctx.Done()
+	closed := make(chan struct{})
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
+	context.AfterFunc(ctx, func() {
+		defer close(closed)
 
-	factory.ServerGracefulStop(server, shutdownCtx) //nolint:contextcheck
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
 
-	return nil
+		factory.ServerGracefulStop(server, shutdownCtx) //nolint:contextcheck
+	})
+
+	err = server.Serve(listener)
+
+	cancel()
+	<-closed
+
+	return err
 }
 
 var _ system.HealthcheckedService = (*Machined)(nil)
@@ -189,27 +203,27 @@ type Machined struct {
 }
 
 // ID implements the Service interface.
-func (m *Machined) ID(r runtime.Runtime) string {
+func (m *Machined) ID(runtime.Runtime) string {
 	return machinedServiceID
 }
 
 // PreFunc implements the Service interface.
-func (m *Machined) PreFunc(ctx context.Context, r runtime.Runtime) error {
+func (m *Machined) PreFunc(context.Context, runtime.Runtime) error {
 	return nil
 }
 
 // PostFunc implements the Service interface.
-func (m *Machined) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
+func (m *Machined) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 	return nil
 }
 
 // Condition implements the Service interface.
-func (m *Machined) Condition(r runtime.Runtime) conditions.Condition {
+func (m *Machined) Condition(runtime.Runtime) conditions.Condition {
 	return nil
 }
 
 // DependsOn implements the Service interface.
-func (m *Machined) DependsOn(r runtime.Runtime) []string {
+func (m *Machined) DependsOn(runtime.Runtime) []string {
 	return nil
 }
 

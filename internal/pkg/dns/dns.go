@@ -9,11 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"iter"
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -25,6 +24,7 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/proxy"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
+	"github.com/siderolabs/gen/xiter"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )
@@ -90,7 +90,7 @@ func clientWrite(rcode int) bool {
 // Handler is a dns proxy selector.
 type Handler struct {
 	mx     sync.RWMutex
-	dests  []*proxy.Proxy
+	dests  iter.Seq[*proxy.Proxy]
 	logger *zap.Logger
 }
 
@@ -98,6 +98,7 @@ type Handler struct {
 func NewHandler(logger *zap.Logger) *Handler {
 	return &Handler{
 		logger: logger,
+		dests:  xiter.Empty[*proxy.Proxy],
 	}
 }
 
@@ -117,16 +118,14 @@ func (h *Handler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg *dns
 
 	h.logger.Debug("dns request", zap.Stringer("data", msg))
 
-	if len(h.dests) == 0 {
-		return dns.RcodeServerFailure, errors.New("no destination available")
-	}
-
 	var (
-		resp *dns.Msg
-		err  error
+		called bool
+		resp   *dns.Msg
+		err    error
 	)
 
-	for _, ups := range h.dests {
+	for ups := range h.dests {
+		called = true
 		opts := proxy.Options{}
 
 		for {
@@ -144,11 +143,19 @@ func (h *Handler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg *dns
 			break
 		}
 
+		if resp != nil && (resp.Rcode == dns.RcodeServerFailure || resp.Rcode == dns.RcodeRefused) {
+			continue
+		}
+
 		if ctx.Err() != nil || err == nil {
 			break
 		}
 
 		continue
+	}
+
+	if !called {
+		return dns.RcodeServerFailure, errors.New("no destination available")
 	}
 
 	if ctx.Err() != nil {
@@ -175,11 +182,11 @@ func (h *Handler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg *dns
 }
 
 // SetProxy sets destination dns proxy servers.
-func (h *Handler) SetProxy(prxs []*proxy.Proxy) bool {
+func (h *Handler) SetProxy(prxs iter.Seq[*proxy.Proxy]) bool {
 	h.mx.Lock()
 	defer h.mx.Unlock()
 
-	if slices.Equal(h.dests, prxs) {
+	if xiter.Equal(h.dests, prxs) {
 		return false
 	}
 
@@ -189,7 +196,7 @@ func (h *Handler) SetProxy(prxs []*proxy.Proxy) bool {
 }
 
 // Stop stops and clears dns proxy selector.
-func (h *Handler) Stop() { h.SetProxy(nil) }
+func (h *Handler) Stop() { h.SetProxy(xiter.Empty) }
 
 // NewNodeHandler creates a new NodeHandler.
 func NewNodeHandler(next plugin.Handler, hostMapper HostMapper, logger *zap.Logger) *NodeHandler {
@@ -198,7 +205,7 @@ func NewNodeHandler(next plugin.Handler, hostMapper HostMapper, logger *zap.Logg
 
 // HostMapper is a name to node mapper.
 type HostMapper interface {
-	ResolveAddr(ctx context.Context, qType uint16, name string) []netip.Addr
+	ResolveAddr(ctx context.Context, qType uint16, name string) (iter.Seq[netip.Addr], bool)
 }
 
 // NodeHandler try to resolve dns request to a node. If required node is not found, it will move to the next handler.
@@ -229,14 +236,19 @@ func (h *NodeHandler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg 
 	req := request.Request{W: wrt, Req: msg}
 
 	// Check if the request is for a node.
-	result := h.mapper.ResolveAddr(ctx, req.QType(), req.Name())
-	if len(result) == 0 {
+	result, ok := h.mapper.ResolveAddr(ctx, req.QType(), req.Name())
+	if !ok {
+		return h.next.ServeDNS(ctx, wrt, msg)
+	}
+
+	answers := mapAnswers(result, req.Name())
+	if len(answers) == 0 {
 		return h.next.ServeDNS(ctx, wrt, msg)
 	}
 
 	resp := new(dns.Msg).SetReply(req.Req)
 	resp.Authoritative = true
-	resp.Answer = mapAnswers(result, req.Name())
+	resp.Answer = answers
 
 	err := wrt.WriteMsg(resp)
 	if err != nil {
@@ -247,10 +259,10 @@ func (h *NodeHandler) ServeDNS(ctx context.Context, wrt dns.ResponseWriter, msg 
 	return dns.RcodeSuccess, nil
 }
 
-func mapAnswers(addrs []netip.Addr, name string) []dns.RR {
+func mapAnswers(addrs iter.Seq[netip.Addr], name string) []dns.RR {
 	var result []dns.RR
 
-	for _, addr := range addrs {
+	for addr := range addrs {
 		switch {
 		case addr.Is4():
 			result = append(result, &dns.A{
@@ -284,89 +296,6 @@ const nodeDNSResponseTTL = 10
 // SetEnabled sets the handler enabled state.
 func (h *NodeHandler) SetEnabled(enabled bool) {
 	h.enabled.Store(enabled)
-}
-
-// ServerOptions is a Server options.
-type ServerOptions struct {
-	Listener      net.Listener
-	PacketConn    net.PacketConn
-	Handler       dns.Handler
-	ReadTimeout   time.Duration
-	WriteTimeout  time.Duration
-	IdleTimeout   func() time.Duration
-	MaxTCPQueries int
-	Logger        *zap.Logger
-}
-
-// NewServer creates a new Server.
-func NewServer(opts ServerOptions) *Server {
-	return &Server{
-		srv: &dns.Server{
-			Listener:      opts.Listener,
-			PacketConn:    opts.PacketConn,
-			Handler:       opts.Handler,
-			UDPSize:       dns.DefaultMsgSize, // 4096 since default is [dns.MinMsgSize] = 512 bytes, which is too small.
-			ReadTimeout:   opts.ReadTimeout,
-			WriteTimeout:  opts.WriteTimeout,
-			IdleTimeout:   opts.IdleTimeout,
-			MaxTCPQueries: opts.MaxTCPQueries,
-		},
-		logger: opts.Logger,
-	}
-}
-
-// Server is a dns server.
-type Server struct {
-	srv    *dns.Server
-	logger *zap.Logger
-}
-
-// Start starts the dns server. Returns a function to stop the server.
-func (s *Server) Start(onDone func(err error)) (stop func(), stopped <-chan struct{}) {
-	done := make(chan struct{})
-
-	fn := sync.OnceFunc(func() {
-		for {
-			err := s.srv.Shutdown()
-			if err != nil {
-				if strings.Contains(err.Error(), "server not started") {
-					// There a possible scenario where `go func()` not yet reached `ActivateAndServe` and yielded CPU
-					// time to another goroutine and then this closure reached `Shutdown`. In that case
-					// `ActivateAndServe` will actually start after `Shutdown` and this closure will block forever
-					// because `go func()` will never exit and close `done` channel.
-					continue
-				}
-
-				s.logger.Error("error shutting down dns server", zap.Error(err))
-			}
-
-			break
-		}
-
-		closer := io.Closer(s.srv.Listener)
-		if closer == nil {
-			closer = s.srv.PacketConn
-		}
-
-		if closer != nil {
-			err := closer.Close()
-			if err != nil && !errors.Is(err, net.ErrClosed) {
-				s.logger.Error("error closing dns server listener", zap.Error(err))
-			} else {
-				s.logger.Debug("dns server listener closed")
-			}
-		}
-
-		<-done
-	})
-
-	go func() {
-		defer close(done)
-
-		onDone(s.srv.ActivateAndServe())
-	}()
-
-	return fn, done
 }
 
 // NewTCPListener creates a new TCP listener.

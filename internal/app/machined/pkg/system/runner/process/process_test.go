@@ -10,7 +10,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,7 +28,7 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner/restart"
 )
 
-func MockEventSink(state events.ServiceState, message string, args ...interface{}) {
+func MockEventSink(state events.ServiceState, message string, args ...any) {
 	log.Printf("state %s: %s", state, fmt.Sprintf(message, args...))
 }
 
@@ -143,7 +146,7 @@ func (suite *ProcessSuite) TestRunRestartFailed() {
 
 	wg.Wait()
 
-	suite.Assert().True(len(fetchLog()) > 20)
+	suite.Assert().GreaterOrEqual(len(fetchLog()), 20, fetchLog())
 }
 
 func (suite *ProcessSuite) TestStopFailingAndRestarting() {
@@ -219,11 +222,154 @@ func (suite *ProcessSuite) TestStopSigKill() {
 	<-done
 }
 
-func TestProcessSuite(t *testing.T) {
-	if _, err := os.Stat("/sbin/wrapperd"); err != nil {
-		t.Skip("wrapperd not found")
+func (suite *ProcessSuite) TestPriority() {
+	pidFile := filepath.Join(suite.tmpDir, "talos-test-pid-prio")
+	//nolint:errcheck
+	_ = os.Remove(pidFile)
+
+	currentPriority, err := syscall.Getpriority(syscall.PRIO_PROCESS, os.Getpid())
+	suite.Assert().NoError(err)
+
+	if currentPriority <= 3 {
+		suite.T().Skipf("skipping test, we already have low priority %d", currentPriority)
 	}
 
+	r := process.NewRunner(false, &runner.Args{
+		ID:          "nokill",
+		ProcessArgs: []string{"/bin/sh", "-c", "echo $BASHPID >> " + pidFile + "; trap -- '' SIGTERM; while :; do :; done"},
+	},
+		runner.WithLoggingManager(suite.loggingManager),
+		runner.WithGracefulShutdownTimeout(10*time.Millisecond),
+		runner.WithPriority(17),
+	)
+	suite.Assert().NoError(r.Open())
+
+	defer func() { suite.Assert().NoError(r.Close()) }()
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- r.Run(MockEventSink)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	pidString, err := os.ReadFile(pidFile)
+	suite.Assert().NoError(err)
+
+	pid, err := strconv.ParseUint(strings.Trim(string(pidString), "\r\n"), 10, 32)
+	suite.Assert().NoError(err)
+
+	currentPriority, err = syscall.Getpriority(syscall.PRIO_PROCESS, int(pid))
+	suite.Assert().NoError(err)
+	// 40..1 corresponds to -20..19 since system call interface must reserve -1 for error
+	suite.Assert().Equalf(3, currentPriority, "process priority should be 3 (nice 17), got %d", currentPriority)
+
+	time.Sleep(1000 * time.Millisecond)
+
+	suite.Assert().NoError(r.Stop())
+	<-done
+}
+
+func (suite *ProcessSuite) TestIOPriority() {
+	pidFile := filepath.Join(suite.tmpDir, "talos-test-pid-ionice")
+	//nolint:errcheck
+	_ = os.Remove(pidFile)
+
+	//nolint:errcheck
+	ioprio, _, _ := syscall.Syscall(syscall.SYS_IOPRIO_GET, uintptr(1), uintptr(os.Getpid()), 0)
+	suite.Assert().NotEqual(-1, int(ioprio))
+
+	if ioprio>>13 == runner.IoprioClassIdle {
+		suite.T().Skipf("skipping test, we already have idle IO priority %d", ioprio)
+	}
+
+	r := process.NewRunner(false, &runner.Args{
+		ID:          "nokill",
+		ProcessArgs: []string{"/bin/sh", "-c", "echo $BASHPID >> " + pidFile + "; trap -- '' SIGTERM; while :; do :; done"},
+	},
+		runner.WithLoggingManager(suite.loggingManager),
+		runner.WithGracefulShutdownTimeout(10*time.Millisecond),
+		runner.WithIOPriority(runner.IoprioClassIdle, 6),
+	)
+	suite.Assert().NoError(r.Open())
+
+	defer func() { suite.Assert().NoError(r.Close()) }()
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- r.Run(MockEventSink)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	pidString, err := os.ReadFile(pidFile)
+	suite.Assert().NoError(err)
+
+	pid, err := strconv.ParseUint(strings.Trim(string(pidString), "\r\n"), 10, 32)
+	suite.Assert().NoError(err)
+
+	//nolint:errcheck
+	ioprio, _, _ = syscall.Syscall(syscall.SYS_IOPRIO_GET, uintptr(1), uintptr(pid), 0)
+	suite.Assert().NotEqual(-1, int(ioprio))
+	suite.Assert().Equal(runner.IoprioClassIdle<<13+6, int(ioprio))
+
+	time.Sleep(10 * time.Millisecond)
+
+	suite.Assert().NoError(r.Stop())
+	<-done
+}
+
+func (suite *ProcessSuite) TestSchedulingPolicy() {
+	pidFile := filepath.Join(suite.tmpDir, "talos-test-pid-sched")
+	//nolint:errcheck
+	_ = os.Remove(pidFile)
+
+	pol, _, errno := syscall.Syscall(syscall.SYS_SCHED_GETSCHEDULER, uintptr(os.Getpid()), 0, 0)
+	suite.Assert().Equal(0, int(errno))
+
+	if pol == runner.SchedulingPolicyIdle {
+		suite.T().Skipf("skipping test, we already have idle scheduling policy")
+	}
+
+	r := process.NewRunner(false, &runner.Args{
+		ID:          "nokill",
+		ProcessArgs: []string{"/bin/sh", "-c", "echo $BASHPID >> " + pidFile + "; trap -- '' SIGTERM; while :; do :; done"},
+	},
+		runner.WithLoggingManager(suite.loggingManager),
+		runner.WithGracefulShutdownTimeout(10*time.Millisecond),
+		runner.WithSchedulingPolicy(runner.SchedulingPolicyIdle),
+	)
+	suite.Assert().NoError(r.Open())
+
+	defer func() { suite.Assert().NoError(r.Close()) }()
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- r.Run(MockEventSink)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	pidString, err := os.ReadFile(pidFile)
+	suite.Assert().NoError(err)
+
+	pid, err := strconv.ParseUint(strings.Trim(string(pidString), "\r\n"), 10, 32)
+	suite.Assert().NoError(err)
+
+	pol, _, errno = syscall.Syscall(syscall.SYS_SCHED_GETSCHEDULER, uintptr(pid), 0, 0)
+	suite.Assert().Equal(0, int(errno))
+	suite.Assert().Equal(runner.SchedulingPolicyIdle, int(pol))
+
+	time.Sleep(10 * time.Millisecond)
+
+	suite.Assert().NoError(r.Stop())
+	<-done
+}
+
+func TestProcessSuite(t *testing.T) {
 	for _, runReaper := range []bool{true, false} {
 		func(runReaper bool) {
 			t.Run(fmt.Sprintf("runReaper=%v", runReaper), func(t *testing.T) { suite.Run(t, &ProcessSuite{runReaper: runReaper}) })

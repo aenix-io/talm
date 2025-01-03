@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	machineruntime "github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
-	"github.com/aenix-io/talm/internal/pkg/meta"
+	"github.com/siderolabs/talos/pkg/machinery/meta"
 	"github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
 

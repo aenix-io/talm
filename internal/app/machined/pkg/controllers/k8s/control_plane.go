@@ -7,23 +7,25 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/blang/semver/v4"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/controller/generic"
 	"github.com/cosi-project/runtime/pkg/controller/generic/transform"
-	"github.com/cosi-project/runtime/pkg/safe"
-	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
-	"github.com/siderolabs/gen/value"
 	"github.com/siderolabs/gen/xslices"
+	"github.com/siderolabs/go-kubernetes/kubernetes/compatibility"
 	"go.uber.org/zap"
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/siderolabs/talos/pkg/argsbuilder"
 	"github.com/siderolabs/talos/pkg/images"
+	"github.com/siderolabs/talos/pkg/kubernetes"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
@@ -95,6 +97,55 @@ func NewControlPlaneAuditPolicyController() *ControlPlaneAuditPolicyController {
 				cfgProvider := machineConfig.Config()
 
 				res.TypedSpec().Config = cfgProvider.Cluster().APIServer().AuditPolicy()
+
+				return nil
+			},
+		},
+	)
+}
+
+// ControlPlaneAuthorizationController manages k8s.AuthorizationConfig based on configuration.
+type ControlPlaneAuthorizationController = transform.Controller[*config.MachineConfig, *k8s.AuthorizationConfig]
+
+// NewControlPlaneAuthorizationController instanciates the controller.
+func NewControlPlaneAuthorizationController() *ControlPlaneAuthorizationController {
+	return transform.NewController(
+		transform.Settings[*config.MachineConfig, *k8s.AuthorizationConfig]{
+			Name:                    "k8s.ControlPlaneAuthorizationPolicyController",
+			MapMetadataOptionalFunc: controlplaneMapFunc(k8s.NewAuthorizationConfig()),
+			TransformFunc: func(ctx context.Context, r controller.Reader, logger *zap.Logger, machineConfig *config.MachineConfig, res *k8s.AuthorizationConfig) error {
+				cfgProvider := machineConfig.Config()
+
+				res.TypedSpec().Image = cfgProvider.Cluster().APIServer().Image()
+
+				if !compatibility.VersionFromImageRef(cfgProvider.Cluster().APIServer().Image()).KubeAPIServerSupportsAuthorizationConfigFile() {
+					return nil
+				}
+
+				if cfgProvider.Cluster().APIServer().AuthorizationConfig() == nil {
+					res.TypedSpec().Config = v1alpha1.APIServerDefaultAuthorizationConfigAuthorizers
+
+					return nil
+				}
+
+				var authorizers []k8s.AuthorizationAuthorizersSpec
+
+				for _, authorizer := range cfgProvider.Cluster().APIServer().AuthorizationConfig() {
+					// skip Node and RBAC authorizers as we add them by default later on.
+					if authorizer.Type() == "Node" || authorizer.Type() == "RBAC" {
+						continue
+					}
+
+					authorizers = slices.Concat(authorizers, []k8s.AuthorizationAuthorizersSpec{
+						{
+							Type:    authorizer.Type(),
+							Name:    authorizer.Name(),
+							Webhook: authorizer.Webhook(),
+						},
+					})
+				}
+
+				res.TypedSpec().Config = slices.Concat(v1alpha1.APIServerDefaultAuthorizationConfigAuthorizers, authorizers)
 
 				return nil
 			},
@@ -213,8 +264,6 @@ func NewControlPlaneSchedulerController() *ControlPlaneSchedulerController {
 type ControlPlaneBootstrapManifestsController = transform.Controller[*config.MachineConfig, *k8s.BootstrapManifestsConfig]
 
 // NewControlPlaneBootstrapManifestsController instanciates the controller.
-//
-//nolint:gocyclo
 func NewControlPlaneBootstrapManifestsController() *ControlPlaneBootstrapManifestsController {
 	return transform.NewController(
 		transform.Settings[*config.MachineConfig, *k8s.BootstrapManifestsConfig]{
@@ -261,17 +310,6 @@ func NewControlPlaneBootstrapManifestsController() *ControlPlaneBootstrapManifes
 					server = cfgProvider.Cluster().Endpoint().String()
 				}
 
-				hostDNSCfg, err := safe.ReaderGetByID[*network.HostDNSConfig](ctx, r, network.HostDNSConfigID)
-				if err != nil && !state.IsNotFoundError(err) {
-					return fmt.Errorf("error getting host DNS config: %w", err)
-				}
-
-				var serviceHostDNSAddress string
-
-				if hostDNSCfg != nil && !value.IsZero(hostDNSCfg.TypedSpec().ServiceHostDNSAddress) {
-					serviceHostDNSAddress = hostDNSCfg.TypedSpec().ServiceHostDNSAddress.String()
-				}
-
 				*res.TypedSpec() = k8s.BootstrapManifestsConfigSpec{
 					Server:        server,
 					ClusterDomain: cfgProvider.Cluster().Network().DNSDomain(),
@@ -290,7 +328,6 @@ func NewControlPlaneBootstrapManifestsController() *ControlPlaneBootstrapManifes
 
 					FlannelEnabled:         cfgProvider.Cluster().Network().CNI().Name() == constants.FlannelCNI,
 					FlannelImage:           images.Flannel,
-					FlannelCNIImage:        images.FlannelCNI,
 					FlannelExtraArgs:       cfgProvider.Cluster().Network().CNI().Flannel().ExtraArgs(),
 					FlannelKubeServiceHost: flannelKubeServiceHost,
 					FlannelKubeServicePort: flannelKubeServicePort,
@@ -298,8 +335,6 @@ func NewControlPlaneBootstrapManifestsController() *ControlPlaneBootstrapManifes
 					PodSecurityPolicyEnabled: !cfgProvider.Cluster().APIServer().DisablePodSecurityPolicy(),
 
 					TalosAPIServiceEnabled: cfgProvider.Machine().Features().KubernetesTalosAPIAccess().Enabled(),
-
-					ServiceHostDNSAddress: serviceHostDNSAddress,
 				}
 
 				return nil
@@ -412,11 +447,22 @@ func convertResources(resources talosconfig.Resources) k8s.Resources {
 func getProxyArgs(cfgProvider talosconfig.Config) ([]string, error) {
 	clusterCidr := strings.Join(cfgProvider.Cluster().Network().PodCIDRs(), ",")
 
+	proxyMode := cfgProvider.Cluster().Proxy().Mode()
+
+	if proxyMode == "" {
+		// determine proxy mode based on kube-proxy version via the image, use 'nftables' for Kubernetes >= 1.31
+		if kubernetes.VersionGTE(cfgProvider.Cluster().Proxy().Image(), semver.MustParse("1.31.0")) {
+			proxyMode = "nftables"
+		} else {
+			proxyMode = "iptables"
+		}
+	}
+
 	builder := argsbuilder.Args{
 		"cluster-cidr":           clusterCidr,
 		"hostname-override":      "$(NODE_NAME)",
 		"kubeconfig":             "/etc/kubernetes/kubeconfig",
-		"proxy-mode":             cfgProvider.Cluster().Proxy().Mode(),
+		"proxy-mode":             proxyMode,
 		"conntrack-max-per-core": "0",
 	}
 

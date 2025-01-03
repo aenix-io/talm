@@ -5,11 +5,12 @@
 package network
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -214,7 +215,7 @@ func ParseCmdlineNetwork(cmdline *procfs.Cmdline) (CmdlineNetworking, error) {
 
 					ntpIP, err = netip.ParseAddr(fields[i])
 					if err != nil {
-						return settings, fmt.Errorf("error parsing DNS IP: %w", err)
+						return settings, fmt.Errorf("error parsing NTP IP: %w", err)
 					}
 
 					settings.NTPAddresses = append(settings.NTPAddresses, ntpIP)
@@ -230,7 +231,7 @@ func ParseCmdlineNetwork(cmdline *procfs.Cmdline) (CmdlineNetworking, error) {
 			if linkConfig.LinkName == "" {
 				ifaces, _ := net.Interfaces() //nolint:errcheck // ignoring error here as ifaces will be empty
 
-				sort.Slice(ifaces, func(i, j int) bool { return ifaces[i].Name < ifaces[j].Name })
+				slices.SortFunc(ifaces, func(a, b net.Interface) int { return cmp.Compare(a.Name, b.Name) })
 
 				for _, iface := range ifaces {
 					if iface.Flags&net.FlagLoopback != 0 {
@@ -337,10 +338,17 @@ func ParseCmdlineNetwork(cmdline *procfs.Cmdline) (CmdlineNetworking, error) {
 
 		_, vlanNumberString, ok := strings.Cut(vlanName, ".")
 		if !ok {
-			return settings, fmt.Errorf("malformed vlan commandline argument: %s", *vlanSettings)
+			vlanNumberString, ok = strings.CutPrefix(vlanName, "vlan")
+			if !ok {
+				return settings, fmt.Errorf("malformed vlan commandline argument: %s", *vlanSettings)
+			}
 		}
 
 		vlanID, err := strconv.Atoi(vlanNumberString)
+
+		if vlanID < 1 || 4095 < vlanID {
+			return settings, fmt.Errorf("invalid vlanID=%d, must be in the range 1..4095: %s", vlanID, *vlanSettings)
+		}
 
 		if err != nil || vlanNumberString == "" {
 			return settings, errors.New("unable to parse vlan")

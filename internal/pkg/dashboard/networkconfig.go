@@ -7,7 +7,7 @@ package dashboard
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -18,7 +18,7 @@ import (
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/pkg/dashboard/resourcedata"
-	"github.com/aenix-io/talm/internal/pkg/meta"
+	"github.com/siderolabs/talos/pkg/machinery/meta"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
@@ -348,7 +348,7 @@ func (widget *NetworkConfigGrid) updateNodeData(data resourcedata.Data) {
 
 		links := maps.Keys(nodeData.linkSet)
 
-		sort.Strings(links)
+		slices.Sort(links)
 
 		allLinks := append([]string{interfaceNone}, links...)
 

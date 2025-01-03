@@ -6,207 +6,166 @@
 package encryption
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"sort"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/siderolabs/go-blockdevice/blockdevice"
-	"github.com/siderolabs/go-blockdevice/blockdevice/encryption"
-	"github.com/siderolabs/go-blockdevice/blockdevice/encryption/luks"
-	"github.com/siderolabs/go-blockdevice/blockdevice/encryption/token"
-	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
-	"github.com/siderolabs/go-retry/retry"
+	"github.com/siderolabs/go-blockdevice/v2/encryption"
+	"github.com/siderolabs/go-blockdevice/v2/encryption/luks"
+	"github.com/siderolabs/go-blockdevice/v2/encryption/token"
+	"go.uber.org/zap"
 
 	"github.com/aenix-io/talm/internal/pkg/encryption/helpers"
 	"github.com/aenix-io/talm/internal/pkg/encryption/keys"
-	"github.com/siderolabs/talos/pkg/machinery/config/config"
+	"github.com/siderolabs/talos/pkg/machinery/resources/block"
 )
 
-const (
-	keyFetchTimeout   = time.Minute * 5
-	keyHandlerTimeout = time.Second * 10
-)
+const keyHandlerTimeout = time.Second * 10
 
 // NewHandler creates new Handler.
-func NewHandler(device *blockdevice.BlockDevice, partition *gpt.Partition, encryptionConfig config.Encryption, getSystemInformation helpers.SystemInformationGetter) (*Handler, error) {
-	var provider encryption.Provider
+func NewHandler(encryptionConfig block.EncryptionSpec, volumeID string, getSystemInformation helpers.SystemInformationGetter) (*Handler, error) {
+	cipher, err := luks.ParseCipherKind(encryptionConfig.Cipher)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cipher kind: %w", err)
+	}
 
-	switch encryptionConfig.Provider() {
-	case encryption.LUKS2:
-		cipher, err := luks.ParseCipherKind(encryptionConfig.Cipher())
+	var opts []luks.Option
+
+	if encryptionConfig.KeySize != 0 {
+		opts = append(opts, luks.WithKeySize(encryptionConfig.KeySize))
+	}
+
+	if encryptionConfig.BlockSize != 0 {
+		opts = append(opts, luks.WithBlockSize(encryptionConfig.BlockSize))
+	}
+
+	if encryptionConfig.PerfOptions != nil {
+		for _, opt := range encryptionConfig.PerfOptions {
+			if err = luks.ValidatePerfOption(opt); err != nil {
+				return nil, fmt.Errorf("invalid luks performance options: %w", err)
+			}
+		}
+
+		opts = append(opts, luks.WithPerfOptions(encryptionConfig.PerfOptions...))
+	}
+
+	keyHandlers := make([]keys.Handler, 0, len(encryptionConfig.Keys))
+
+	for _, cfg := range encryptionConfig.Keys {
+		handler, err := keys.NewHandler(cfg, keys.WithVolumeID(volumeID), keys.WithSystemInformationGetter(getSystemInformation))
 		if err != nil {
 			return nil, err
 		}
 
-		opts := []luks.Option{}
-		if encryptionConfig.KeySize() != 0 {
-			opts = append(opts, luks.WithKeySize(encryptionConfig.KeySize()))
-		}
-
-		if encryptionConfig.BlockSize() != 0 {
-			opts = append(opts, luks.WithBlockSize(encryptionConfig.BlockSize()))
-		}
-
-		if encryptionConfig.Options() != nil {
-			for _, opt := range encryptionConfig.Options() {
-				if err = luks.ValidatePerfOption(opt); err != nil {
-					return nil, err
-				}
-			}
-
-			opts = append(opts, luks.WithPerfOptions(encryptionConfig.Options()...))
-		}
-
-		provider = luks.New(
-			cipher,
-			opts...,
-		)
-	default:
-		return nil, fmt.Errorf("unknown encryption kind %s", encryptionConfig.Provider())
+		keyHandlers = append(keyHandlers, handler)
 	}
 
+	//nolint:scopelint
+	slices.SortFunc(keyHandlers, func(a, b keys.Handler) int { return cmp.Compare(a.Slot(), b.Slot()) })
+
+	provider := luks.New(
+		cipher,
+		opts...,
+	)
+
 	return &Handler{
-		device:               device,
-		partition:            partition,
-		encryptionConfig:     encryptionConfig,
-		encryptionProvider:   provider,
-		getSystemInformation: getSystemInformation,
+		encryptionProvider: provider,
+		keyHandlers:        keyHandlers,
 	}, nil
 }
 
 // Handler reads encryption config, creates appropriate
 // encryption provider, handles encrypted partition open and close.
 type Handler struct {
-	device               *blockdevice.BlockDevice
-	partition            *gpt.Partition
-	encryptionConfig     config.Encryption
-	encryptionProvider   encryption.Provider
-	getSystemInformation helpers.SystemInformationGetter
-	encryptedPath        string
+	encryptionProvider encryption.Provider
+	keyHandlers        []keys.Handler
 }
 
 // Open encrypted partition.
-//
-//nolint:gocyclo
-func (h *Handler) Open(ctx context.Context) (string, error) {
-	partPath, err := h.partition.Path()
+func (h *Handler) Open(ctx context.Context, logger *zap.Logger, devicePath, encryptedName string) (string, []string, error) {
+	isOpen, path, err := h.encryptionProvider.IsOpen(ctx, devicePath, encryptedName)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	sb, err := h.partition.SuperBlock()
+	var usedKey *encryption.Key
+
+	if !isOpen {
+		handler, key, _, err := h.tryHandlers(ctx, logger, func(ctx context.Context, handler keys.Handler) (*encryption.Key, token.Token, error) {
+			slotToken, err := h.readToken(ctx, devicePath, handler.Slot())
+			if err != nil {
+				return nil, nil, err
+			}
+
+			slotKey, err := handler.GetKey(ctx, slotToken)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			// try to open with the key, if it fails, tryHandlers will try the next handler
+			path, err = h.encryptionProvider.Open(ctx, devicePath, encryptedName, slotKey)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return slotKey, slotToken, nil
+		})
+		if err != nil {
+			return "", nil, err
+		}
+
+		logger.Info("opened encrypted device", zap.Int("slot", handler.Slot()), zap.String("type", fmt.Sprintf("%T", handler)))
+
+		usedKey = key
+	}
+
+	failedSyncs, err := h.syncKeys(ctx, logger, devicePath, usedKey)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	handlers, err := h.initKeyHandlers(h.encryptionConfig, h.partition)
-	if err != nil {
-		return "", err
-	}
-
-	// encrypt if partition is not encrypted and empty
-	if sb == nil {
-		err = h.formatAndEncrypt(ctx, partPath, handlers)
-		if err != nil {
-			return "", err
-		}
-	} else if sb.Type() != h.encryptionConfig.Provider() {
-		return "", fmt.Errorf("failed to encrypt the partition %s, because it is not empty", partPath)
-	}
-
-	var (
-		path string
-		key  *encryption.Key
-	)
-
-	if err = h.tryHandlers(ctx, handlers, func(ctx context.Context, handler keys.Handler) error {
-		var token token.Token
-
-		token, err = h.readToken(partPath, handler.Slot())
-		if err != nil {
-			return err
-		}
-
-		if key, err = handler.GetKey(ctx, token); err != nil {
-			return err
-		}
-
-		path, err = h.encryptionProvider.Open(partPath, key)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	}); err != nil {
-		return "", fmt.Errorf("failed to open encrypted device %s: %w", partPath, err)
-	}
-
-	log.Printf("mapped encrypted partition %s -> %s", partPath, path)
-
-	if err = h.syncKeys(ctx, partPath, handlers, key); err != nil {
-		return "", err
-	}
-
-	h.encryptedPath = path
-
-	return path, nil
+	return path, failedSyncs, nil
 }
 
 // Close encrypted partition.
-func (h *Handler) Close() error {
-	if h.encryptedPath == "" {
-		return nil
-	}
+func (h *Handler) Close(ctx context.Context, encryptedPath string) error {
+	if err := h.encryptionProvider.Close(ctx, encryptedPath); err != nil {
+		if errors.Is(err, encryption.ErrDeviceNotReady) {
+			return nil
+		}
 
-	if err := h.encryptionProvider.Close(h.encryptedPath); err != nil {
-		return err
+		return fmt.Errorf("error closing %s: %w", encryptedPath, err)
 	}
-
-	log.Printf("closed encrypted partition %s", h.encryptedPath)
 
 	return nil
 }
 
-func (h *Handler) formatAndEncrypt(ctx context.Context, path string, handlers []keys.Handler) error {
-	log.Printf("encrypting the partition %s (%s)", path, h.partition.Name)
-
-	if len(handlers) == 0 {
-		return errors.New("no encryption keys found")
-	}
-
-	var (
-		key   *encryption.Key
-		token token.Token
-		err   error
-	)
-
-	if err = h.tryHandlers(ctx, handlers, func(ctx context.Context, h keys.Handler) error {
-		if key, token, err = h.NewKey(ctx); err != nil {
-			return err
-		}
-
-		return nil
-	}); err != nil {
+// FormatAndEncrypt formats and encrypts the volume.
+func (h *Handler) FormatAndEncrypt(ctx context.Context, logger *zap.Logger, path string) error {
+	_, key, token, err := h.tryHandlers(ctx, logger, func(ctx context.Context, h keys.Handler) (*encryption.Key, token.Token, error) {
+		return h.NewKey(ctx)
+	})
+	if err != nil {
 		return err
 	}
 
-	if err = h.encryptionProvider.Encrypt(path, key); err != nil {
+	if err = h.encryptionProvider.Encrypt(ctx, path, key); err != nil {
 		return err
 	}
 
 	if token != nil {
-		if err = h.encryptionProvider.SetToken(path, key.Slot, token); err != nil {
+		if err = h.encryptionProvider.SetToken(ctx, path, key.Slot, token); err != nil {
 			return err
 		}
 	}
 
-	for _, handler := range handlers {
+	for _, handler := range h.keyHandlers {
 		if handler.Slot() == key.Slot {
 			continue
 		}
@@ -220,36 +179,42 @@ func (h *Handler) formatAndEncrypt(ctx context.Context, path string, handlers []
 }
 
 //nolint:gocyclo
-func (h *Handler) syncKeys(ctx context.Context, path string, handlers []keys.Handler, k *encryption.Key) error {
+func (h *Handler) syncKeys(ctx context.Context, logger *zap.Logger, path string, k *encryption.Key) ([]string, error) {
 	keyslots, err := h.encryptionProvider.ReadKeyslots(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
+	var failedSyncs []string
 
 	visited := map[string]bool{}
 
-	for _, handler := range handlers {
+	for _, handler := range h.keyHandlers {
 		slot := strconv.Itoa(handler.Slot())
 		visited[slot] = true
 		// no need to update the key which we already detected as unchanged
-		if k.Slot == handler.Slot() {
+		if k != nil && k.Slot == handler.Slot() {
 			continue
 		}
 
 		// keyslot exists
 		if _, ok := keyslots.Keyslots[slot]; ok {
 			if err = h.updateKey(ctx, path, k, handler); err != nil {
-				return err
-			}
+				logger.Error("failed to update key", zap.Int("slot", handler.Slot()), zap.String("handler", fmt.Sprintf("%T", handler)), zap.Error(err))
 
-			log.Printf("updated encryption key at slot %d", handler.Slot())
+				failedSyncs = append(failedSyncs, fmt.Sprintf("error updating key slot %s %T: %s", slot, handler, err))
+			} else {
+				logger.Info("updated encryption key", zap.Int("slot", handler.Slot()))
+			}
 		} else {
 			// keyslot does not exist so just add the key
 			if err = h.addKey(ctx, path, k, handler); err != nil {
-				return err
-			}
+				logger.Error("failed to add key", zap.Int("slot", handler.Slot()), zap.String("handler", fmt.Sprintf("%T", handler)), zap.Error(err))
 
-			log.Printf("added encryption key to slot %d", handler.Slot())
+				failedSyncs = append(failedSyncs, fmt.Sprintf("error adding key slot %s %T: %s", slot, handler, err))
+			} else {
+				logger.Info("added encryption key", zap.Int("slot", handler.Slot()))
+			}
 		}
 	}
 
@@ -258,18 +223,20 @@ func (h *Handler) syncKeys(ctx context.Context, path string, handlers []keys.Han
 		if !visited[slot] {
 			s, err := strconv.ParseInt(slot, 10, 64)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			if err = h.encryptionProvider.RemoveKey(path, int(s), k); err != nil {
-				return err
-			}
+			if err = h.encryptionProvider.RemoveKey(ctx, path, int(s), k); err != nil {
+				logger.Error("failed to remove key", zap.Int("slot", int(s)), zap.Error(err))
 
-			log.Printf("removed key at slot %d", k.Slot)
+				failedSyncs = append(failedSyncs, fmt.Sprintf("error removing key slot %s: %s", slot, err))
+			} else {
+				logger.Info("removed encryption key", zap.Int("slot", k.Slot))
+			}
 		}
 	}
 
-	return nil
+	return failedSyncs, nil
 }
 
 func (h *Handler) updateKey(ctx context.Context, path string, existingKey *encryption.Key, handler keys.Handler) error {
@@ -283,7 +250,7 @@ func (h *Handler) updateKey(ctx context.Context, path string, existingKey *encry
 	}
 
 	// re-add the key to the slot
-	err = h.encryptionProvider.RemoveKey(path, handler.Slot(), existingKey)
+	err = h.encryptionProvider.RemoveKey(ctx, path, handler.Slot(), existingKey)
 	if err != nil {
 		return fmt.Errorf("failed to drop old key during key update %w", err)
 	}
@@ -297,7 +264,7 @@ func (h *Handler) updateKey(ctx context.Context, path string, existingKey *encry
 }
 
 func (h *Handler) checkKey(ctx context.Context, path string, handler keys.Handler) (bool, error) {
-	token, err := h.readToken(path, handler.Slot())
+	token, err := h.readToken(ctx, path, handler.Slot())
 	if err != nil {
 		return false, err
 	}
@@ -311,7 +278,7 @@ func (h *Handler) checkKey(ctx context.Context, path string, handler keys.Handle
 		return false, err
 	}
 
-	return h.encryptionProvider.CheckKey(path, key)
+	return h.encryptionProvider.CheckKey(ctx, path, key)
 }
 
 func (h *Handler) addKey(ctx context.Context, path string, existingKey *encryption.Key, handler keys.Handler) error {
@@ -321,12 +288,12 @@ func (h *Handler) addKey(ctx context.Context, path string, existingKey *encrypti
 	}
 
 	if token != nil {
-		if err = h.encryptionProvider.SetToken(path, key.Slot, token); err != nil {
+		if err = h.encryptionProvider.SetToken(ctx, path, key.Slot, token); err != nil {
 			return err
 		}
 	}
 
-	err = h.encryptionProvider.AddKey(path, existingKey, key)
+	err = h.encryptionProvider.AddKey(ctx, path, existingKey, key)
 	if err != nil {
 		return fmt.Errorf("failed to add new key during key update %w", err)
 	}
@@ -334,56 +301,48 @@ func (h *Handler) addKey(ctx context.Context, path string, existingKey *encrypti
 	return nil
 }
 
-func (h *Handler) initKeyHandlers(encryptionConfig config.Encryption, partition *gpt.Partition) ([]keys.Handler, error) {
-	handlers := make([]keys.Handler, 0, len(encryptionConfig.Keys()))
-
-	for _, cfg := range encryptionConfig.Keys() {
-		handler, err := keys.NewHandler(cfg, keys.WithPartitionLabel(partition.Name), keys.WithSystemInformationGetter(h.getSystemInformation))
-		if err != nil {
-			return nil, err
-		}
-
-		handlers = append(handlers, handler)
+// tryHandlers tries to get encryption keys from all available handlers.
+//
+// It returns the first handler that successfully returns a key.
+func (h *Handler) tryHandlers(
+	ctx context.Context, logger *zap.Logger,
+	cb func(ctx context.Context, h keys.Handler) (*encryption.Key, token.Token, error),
+) (
+	keys.Handler, *encryption.Key, token.Token, error,
+) {
+	if len(h.keyHandlers) == 0 {
+		return nil, nil, nil, errors.New("no encryption keys found")
 	}
 
-	//nolint:scopelint
-	sort.Slice(handlers, func(i, j int) bool { return handlers[i].Slot() < handlers[j].Slot() })
-
-	return handlers, nil
-}
-
-func (h *Handler) tryHandlers(ctx context.Context, handlers []keys.Handler, cb func(ctx context.Context, h keys.Handler) error) error {
-	callback := func(ctx context.Context, h keys.Handler) error {
+	callback := func(ctx context.Context, h keys.Handler) (*encryption.Key, token.Token, error) {
 		ctx, cancel := context.WithTimeout(ctx, keyHandlerTimeout)
 		defer cancel()
 
 		return cb(ctx, h)
 	}
 
-	return retry.Exponential(keyFetchTimeout, retry.WithUnits(time.Second), retry.WithJitter(time.Second)).RetryWithContext(ctx,
-		func(ctx context.Context) error {
-			var errs error
+	var errs error
 
-			for _, h := range handlers {
-				if err := callback(ctx, h); err != nil {
-					errs = multierror.Append(errs, err)
+	for _, h := range h.keyHandlers {
+		key, token, err := callback(ctx, h)
+		if err != nil {
+			errs = multierror.Append(errs, err)
 
-					log.Printf("failed to call key handler at slot %d: %s", h.Slot(), err)
+			logger.Warn("failed to call key handler", zap.Int("slot", h.Slot()), zap.Error(err))
 
-					continue
-				}
+			continue
+		}
 
-				return nil
-			}
+		return h, key, token, nil
+	}
 
-			return retry.ExpectedErrorf("no handlers available to get encryption keys from: %w", errs)
-		})
+	return nil, nil, nil, fmt.Errorf("no handlers available to get encryption keys from: %w", errs)
 }
 
-func (h *Handler) readToken(path string, id int) (token.Token, error) {
+func (h *Handler) readToken(ctx context.Context, path string, id int) (token.Token, error) {
 	token := luks.Token[json.RawMessage]{}
 
-	err := h.encryptionProvider.ReadToken(path, id, &token)
+	err := h.encryptionProvider.ReadToken(ctx, path, id, &token)
 	if err != nil {
 		if errors.Is(err, encryption.ErrTokenNotFound) {
 			return nil, nil //nolint:nilnil

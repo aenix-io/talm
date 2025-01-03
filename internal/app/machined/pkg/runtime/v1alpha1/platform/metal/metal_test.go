@@ -18,8 +18,8 @@ import (
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/metal"
-	"github.com/aenix-io/talm/internal/pkg/meta"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/meta"
 	"github.com/siderolabs/talos/pkg/machinery/resources/hardware"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )

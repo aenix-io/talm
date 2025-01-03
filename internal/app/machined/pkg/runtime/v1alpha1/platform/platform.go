@@ -18,6 +18,7 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/akamai"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/aws"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/azure"
+	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/cloudstack"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/container"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/digitalocean"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/platform/equinixmetal"
@@ -66,6 +67,10 @@ const (
 
 // CurrentPlatform is a helper func for discovering the current platform.
 func CurrentPlatform() (p runtime.Platform, err error) {
+	if _, err := os.Stat("/usr/etc/in-container"); err == nil {
+		return newPlatform("container")
+	}
+
 	var platform string
 
 	if p := procfs.ProcCmdline().Get(constants.KernelParamPlatform).First(); p != nil {
@@ -88,7 +93,7 @@ func NewPlatform(platform string) (p runtime.Platform, err error) {
 	return newPlatform(platform)
 }
 
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func newPlatform(platform string) (p runtime.Platform, err error) {
 	switch platform {
 	case "akamai":
@@ -97,6 +102,8 @@ func newPlatform(platform string) (p runtime.Platform, err error) {
 		return aws.NewAWS()
 	case "azure":
 		p = &azure.Azure{}
+	case "cloudstack":
+		p = &cloudstack.Cloudstack{}
 	case "container":
 		p = &container.Container{}
 	case "digital-ocean":
@@ -106,11 +113,15 @@ func newPlatform(platform string) (p runtime.Platform, err error) {
 	case "hcloud":
 		p = &hcloud.Hcloud{}
 	case constants.PlatformMetal:
-		p = &metal.Metal{}
+		_, metalAgentCheckErr := os.Stat(constants.MetalAgentModeFlagPath)
+
+		p = &metal.Metal{
+			IsAgent: metalAgentCheckErr == nil,
+		}
 	case "opennebula":
 		p = &opennebula.OpenNebula{}
 	case "openstack":
-		p = &openstack.Openstack{}
+		p = &openstack.OpenStack{}
 	case "oracle":
 		p = &oracle.Oracle{}
 	case "nocloud":

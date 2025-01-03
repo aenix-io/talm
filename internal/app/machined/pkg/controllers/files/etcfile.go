@@ -14,9 +14,11 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/machinery/resources/files"
 )
 
@@ -28,7 +30,7 @@ type EtcFileController struct {
 	ShadowPath string
 
 	// Cache of bind mounts created.
-	bindMounts map[string]interface{}
+	bindMounts map[string]any
 }
 
 // Name implements controller.Controller interface.
@@ -62,7 +64,7 @@ func (ctrl *EtcFileController) Outputs() []controller.Output {
 //nolint:gocyclo,cyclop
 func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	if ctrl.bindMounts == nil {
-		ctrl.bindMounts = make(map[string]interface{})
+		ctrl.bindMounts = make(map[string]any)
 	}
 
 	for {
@@ -72,13 +74,13 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 		case <-r.EventCh():
 		}
 
-		list, err := r.List(ctx, resource.NewMetadata(files.NamespaceName, files.EtcFileSpecType, "", resource.VersionUndefined))
+		list, err := safe.ReaderList[*files.EtcFileSpec](ctx, r, resource.NewMetadata(files.NamespaceName, files.EtcFileSpecType, "", resource.VersionUndefined))
 		if err != nil {
 			return fmt.Errorf("error listing specs: %w", err)
 		}
 
 		// add finalizers for all live resources
-		for _, res := range list.Items {
+		for res := range list.All() {
 			if res.Metadata().Phase() != resource.PhaseRunning {
 				continue
 			}
@@ -90,8 +92,7 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 
 		touchedIDs := make(map[resource.ID]struct{})
 
-		for _, item := range list.Items {
-			spec := item.(*files.EtcFileSpec) //nolint:errcheck,forcetypeassert
+		for spec := range list.All() {
 			filename := spec.Metadata().ID()
 			_, mountExists := ctrl.bindMounts[filename]
 
@@ -133,12 +134,12 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 
 				logger.Debug("writing file contents", zap.String("dst", dst), zap.Stringer("version", spec.Metadata().Version()))
 
-				if err = UpdateFile(dst, spec.TypedSpec().Contents, spec.TypedSpec().Mode); err != nil {
+				if err = UpdateFile(dst, spec.TypedSpec().Contents, spec.TypedSpec().Mode, spec.TypedSpec().SelinuxLabel); err != nil {
 					return fmt.Errorf("error updating %q: %w", dst, err)
 				}
 
-				if err = r.Modify(ctx, files.NewEtcFileStatus(files.NamespaceName, filename), func(r resource.Resource) error {
-					r.(*files.EtcFileStatus).TypedSpec().SpecVersion = spec.Metadata().Version().String()
+				if err = safe.WriterModify(ctx, r, files.NewEtcFileStatus(files.NamespaceName, filename), func(r *files.EtcFileStatus) error {
+					r.TypedSpec().SpecVersion = spec.Metadata().Version().String()
 
 					return nil
 				}); err != nil {
@@ -150,12 +151,12 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 		}
 
 		// list statuses for cleanup
-		list, err = r.List(ctx, resource.NewMetadata(files.NamespaceName, files.EtcFileStatusType, "", resource.VersionUndefined))
+		statuses, err := safe.ReaderList[*files.EtcFileStatus](ctx, r, resource.NewMetadata(files.NamespaceName, files.EtcFileStatusType, "", resource.VersionUndefined))
 		if err != nil {
 			return fmt.Errorf("error listing resources: %w", err)
 		}
 
-		for _, res := range list.Items {
+		for res := range statuses.All() {
 			if _, ok := touchedIDs[res.Metadata().ID()]; !ok {
 				if err = r.Destroy(ctx, res.Metadata()); err != nil {
 					return fmt.Errorf("error cleaning up specs: %w", err)
@@ -194,11 +195,16 @@ func createBindMount(src, dst string, mode os.FileMode) (err error) {
 
 // UpdateFile is like `os.WriteFile`, but it will only update the file if the
 // contents have changed.
-func UpdateFile(filename string, contents []byte, mode os.FileMode) error {
+func UpdateFile(filename string, contents []byte, mode os.FileMode, selinuxLabel string) error {
 	oldContents, err := os.ReadFile(filename)
 	if err == nil && bytes.Equal(oldContents, contents) {
-		return nil
+		return selinux.SetLabel(filename, selinuxLabel)
 	}
 
-	return os.WriteFile(filename, contents, mode)
+	err = os.WriteFile(filename, contents, mode)
+	if err != nil {
+		return err
+	}
+
+	return selinux.SetLabel(filename, selinuxLabel)
 }

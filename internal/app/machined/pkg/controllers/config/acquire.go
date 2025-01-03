@@ -8,16 +8,21 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/klauspost/compress/zstd"
 	"github.com/siderolabs/gen/optional"
+	"github.com/siderolabs/go-procfs/procfs"
 	"go.uber.org/zap"
 
 	talosruntime "github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
@@ -49,14 +54,22 @@ type Setter interface {
 	SetConfig(config.Provider) error
 }
 
+// ModeGetter gets the current runtime mode.
+type ModeGetter interface {
+	InContainer() bool
+}
+
 // AcquireController loads the machine configuration from multiple sources.
 type AcquireController struct {
 	PlatformConfiguration PlatformConfigurator
 	PlatformEvent         PlatformEventer
+	Mode                  ModeGetter
+	CmdlineGetter         func() *procfs.Cmdline
 	ConfigSetter          Setter
 	EventPublisher        talosruntime.Publisher
 	ValidationMode        validation.RuntimeMode
 	ConfigPath            string
+	ResourceState         state.State
 
 	configSourcesUsed []string
 }
@@ -261,7 +274,7 @@ func (ctrl *AcquireController) loadFromDisk(logger *zap.Logger) (config.Provider
 //
 // Transitions:
 //
-//	--> maintenanceEnter: config loaded from platform, but it's incomplete, or no config from platform: proceed to maintenance
+//	--> cmdline: config loaded from platform, but it's incomplete, or no config from platform: proceed to cmdline
 //	--> done: config loaded from platform, and it's complete
 func (ctrl *AcquireController) statePlatform(ctx context.Context, r controller.Runtime, logger *zap.Logger) (stateMachineFunc, config.Provider, error) {
 	cfg, err := ctrl.loadFromPlatform(ctx, logger)
@@ -278,7 +291,7 @@ func (ctrl *AcquireController) statePlatform(ctx context.Context, r controller.R
 		fallthrough
 	case !cfg.CompleteForBoot():
 		// incomplete or missing config, proceed to maintenance
-		return ctrl.stateMaintenanceEnter, cfg, nil
+		return ctrl.stateCmdline, cfg, nil
 	default:
 		// complete config, we are done
 		return ctrl.stateDone, cfg, nil
@@ -334,8 +347,110 @@ func (ctrl *AcquireController) loadFromPlatform(ctx context.Context, logger *zap
 		return nil, fmt.Errorf("failed to validate config acquired via platform %s: %w", platformName, err)
 	}
 
-	for _, warning := range warnings {
+	warningsRuntime, err := cfg.RuntimeValidate(ctx, ctrl.ResourceState, ctrl.ValidationMode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to runtime validate config acquired via platform %s: %w", platformName, err)
+	}
+
+	for _, warning := range slices.Concat(warnings, warningsRuntime) {
 		logger.Warn("config validation warning", zap.String("platform", platformName), zap.String("warning", warning))
+	}
+
+	return cfg, nil
+}
+
+// stateCmdline acquires machine configuration from the kernel cmdline source.
+//
+// Transitions:
+//
+//	--> maintenanceEnter: config loaded from cmdline, but it's incomplete, or no config from platform: proceed to maintenance
+//	--> done: config loaded from cmdline, and it's complete
+func (ctrl *AcquireController) stateCmdline(ctx context.Context, r controller.Runtime, logger *zap.Logger) (stateMachineFunc, config.Provider, error) {
+	if ctrl.Mode.InContainer() {
+		// no cmdline in containers
+		return ctrl.stateMaintenanceEnter, nil, nil
+	}
+
+	cfg, err := ctrl.loadFromCmdline(ctx, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if cfg != nil {
+		ctrl.configSourcesUsed = append(ctrl.configSourcesUsed, "cmdline")
+	}
+
+	switch {
+	case cfg == nil:
+		fallthrough
+	case !cfg.CompleteForBoot():
+		// incomplete or missing config, proceed to maintenance
+		return ctrl.stateMaintenanceEnter, cfg, nil
+	default:
+		// complete config, we are done
+		return ctrl.stateDone, cfg, nil
+	}
+}
+
+// loadFromCmdline is a helper function for stateCmdline.
+//
+//nolint:gocyclo
+func (ctrl *AcquireController) loadFromCmdline(ctx context.Context, logger *zap.Logger) (config.Provider, error) {
+	cmdline := ctrl.CmdlineGetter()
+
+	param := cmdline.Get(constants.KernelParamConfigInline)
+
+	if param == nil {
+		return nil, nil
+	}
+
+	logger.Info("getting config from cmdline", zap.String("param", constants.KernelParamConfigInline))
+
+	var cfgEncoded strings.Builder
+
+	for i := 0; ; i++ {
+		v := param.Get(i)
+		if v == nil {
+			break
+		}
+
+		cfgEncoded.WriteString(*v)
+	}
+
+	cfgDecoded, err := base64.StdEncoding.DecodeString(cfgEncoded.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 config from cmdline %s: %w", constants.KernelParamConfigInline, err)
+	}
+
+	zr, err := zstd.NewReader(bytes.NewReader(cfgDecoded))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+	}
+
+	defer zr.Close()
+
+	cfgBytes, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read zstd compressed config from cmdline %s: %w", constants.KernelParamConfigInline, err)
+	}
+
+	cfg, err := configloader.NewFromBytes(cfgBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config via cmdline %s: %w", constants.KernelParamConfigInline, err)
+	}
+
+	warnings, err := cfg.Validate(ctrl.ValidationMode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate config acquired via cmdline %s: %w", constants.KernelParamConfigInline, err)
+	}
+
+	warningsRuntime, err := cfg.RuntimeValidate(ctx, ctrl.ResourceState, ctrl.ValidationMode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate config acquired via cmdline %s: %w", constants.KernelParamConfigInline, err)
+	}
+
+	for _, warning := range slices.Concat(warnings, warningsRuntime) {
+		logger.Warn("config validation warning", zap.String("cmdline", constants.KernelParamConfigInline), zap.String("warning", warning))
 	}
 
 	return cfg, nil

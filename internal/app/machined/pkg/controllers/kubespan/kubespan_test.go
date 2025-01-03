@@ -6,9 +6,7 @@ package kubespan_test
 
 import (
 	"context"
-	"log"
-	"reflect"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,8 +18,7 @@ import (
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/suite"
-
-	"github.com/siderolabs/talos/pkg/logging"
+	"go.uber.org/zap/zaptest"
 )
 
 type KubeSpanSuite struct {
@@ -43,9 +40,7 @@ func (suite *KubeSpanSuite) SetupTest() {
 
 	var err error
 
-	logger := logging.Wrap(log.Writer())
-
-	suite.runtime, err = runtime.NewRuntime(suite.state, logger)
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 }
 
@@ -68,9 +63,9 @@ func (suite *KubeSpanSuite) assertResourceIDs(md resource.Metadata, expectedIDs 
 
 		actualIDs := xslices.Map(l.Items, func(r resource.Resource) string { return r.Metadata().ID() })
 
-		sort.Strings(expectedIDs)
+		slices.Sort(expectedIDs)
 
-		if !reflect.DeepEqual(actualIDs, expectedIDs) {
+		if !slices.Equal(actualIDs, expectedIDs) {
 			return retry.ExpectedErrorf("ids do no match expected %v != actual %v", expectedIDs, actualIDs)
 		}
 

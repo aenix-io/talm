@@ -12,9 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -94,7 +92,7 @@ type CRDController struct {
 	allowedNamespaces []string
 	allowedRoles      map[string]struct{}
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 
 	kubeInformerFactory    kubeinformers.SharedInformerFactory
 	dynamicInformerFactory dynamicinformer.DynamicSharedInformerFactory
@@ -163,9 +161,8 @@ func NewCRDController(
 		dynamicClient:          dynCli,
 		dialer:                 dialer,
 		dynamicLister:          lister,
-		queue: workqueue.NewNamedRateLimitingQueue(
-			workqueue.DefaultControllerRateLimiter(),
-			constants.ServiceAccountResourceKind,
+		queue: workqueue.NewTypedRateLimitingQueue(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
 		),
 		logger:         logger,
 		secretsSynced:  secrets.Informer().HasSynced,
@@ -176,7 +173,7 @@ func NewCRDController(
 
 	if _, err = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.enqueueTalosSA,
-		UpdateFunc: func(oldTalosSA, newTalosSA interface{}) {
+		UpdateFunc: func(oldTalosSA, newTalosSA any) {
 			controller.enqueueTalosSA(newTalosSA)
 		},
 	}); err != nil {
@@ -185,9 +182,9 @@ func NewCRDController(
 
 	if _, err = secrets.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.handleSecret,
-		UpdateFunc: func(oldSec, newSec interface{}) {
-			newSecret := newSec.(*corev1.Secret) //nolint:errcheck
-			oldSecret := oldSec.(*corev1.Secret) //nolint:errcheck
+		UpdateFunc: func(oldSec, newSec any) {
+			newSecret := newSec.(*corev1.Secret)
+			oldSecret := oldSec.(*corev1.Secret)
 
 			if newSecret.ResourceVersion == oldSecret.ResourceVersion {
 				return
@@ -260,28 +257,17 @@ func (t *CRDController) processNextWorkItem(ctx context.Context) bool {
 		return false
 	}
 
-	err := func(obj interface{}) error {
+	err := func(obj string) error {
 		defer t.queue.Done(obj)
 
-		var key string
+		if err := t.syncHandler(ctx, obj); err != nil {
+			t.queue.AddRateLimited(obj)
 
-		var ok bool
-
-		if key, ok = obj.(string); !ok {
-			t.queue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-
-			return nil
-		}
-
-		if err := t.syncHandler(ctx, key); err != nil {
-			t.queue.AddRateLimited(key)
-
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
+			return fmt.Errorf("error syncing '%s': %s, requeuing", obj, err.Error())
 		}
 
 		t.queue.Forget(obj)
-		t.logger.Sugar().Debugf("successfully synced '%s'", key)
+		t.logger.Sugar().Debugf("successfully synced '%s'", obj)
 
 		return nil
 	}(obj)
@@ -429,7 +415,7 @@ func (t *CRDController) syncHandler(ctx context.Context, key string) error {
 	return nil
 }
 
-func (t *CRDController) enqueueTalosSA(obj interface{}) {
+func (t *CRDController) enqueueTalosSA(obj any) {
 	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
 		utilruntime.HandleError(err)
@@ -440,7 +426,7 @@ func (t *CRDController) enqueueTalosSA(obj interface{}) {
 	t.queue.Add(key)
 }
 
-func (t *CRDController) handleSecret(obj interface{}) {
+func (t *CRDController) handleSecret(obj any) {
 	var object metav1.Object
 
 	var ok bool
@@ -493,16 +479,8 @@ func (t *CRDController) updateTalosSAStatus(
 
 	talosSACopy := talosSA.DeepCopy()
 
-	if err != nil {
-		return err
-	}
-
 	if failureReason == "" {
 		unstructured.RemoveNestedField(talosSACopy.UnstructuredContent(), "status", "failureReason")
-
-		if err != nil {
-			return err
-		}
 	} else {
 		err = unstructured.SetNestedField(talosSACopy.UnstructuredContent(), failureReason, "status", "failureReason")
 		if err != nil {
@@ -542,7 +520,7 @@ func (t *CRDController) needsUpdate(secret *corev1.Secret, desiredRoles []string
 		return true
 	}
 
-	if !reflect.DeepEqual(t.talosCA.Crt, talosconfigCA) {
+	if !bytes.Equal(t.talosCA.Crt, talosconfigCA) {
 		t.logger.Debug("ca mismatch detected")
 
 		return true
@@ -605,10 +583,10 @@ func (t *CRDController) needsUpdate(secret *corev1.Secret, desiredRoles []string
 
 	actualRoles := certificate.Subject.Organization
 
-	sort.Strings(actualRoles)
-	sort.Strings(desiredRoles)
+	slices.Sort(actualRoles)
+	slices.Sort(desiredRoles)
 
-	if !reflect.DeepEqual(actualRoles, desiredRoles) {
+	if !slices.Equal(actualRoles, desiredRoles) {
 		t.logger.Debug("roles in certificate do not match desired roles",
 			zap.Strings("actual", actualRoles), zap.Strings("desired", desiredRoles))
 

@@ -17,7 +17,7 @@ import (
 
 	"github.com/insomniacslk/dhcp/dhcpv6"
 	"github.com/insomniacslk/dhcp/dhcpv6/nclient6"
-	"github.com/jsimonetti/rtnetlink"
+	"github.com/jsimonetti/rtnetlink/v2"
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-retry/retry"
 	"go.uber.org/zap"
@@ -95,9 +95,7 @@ func (d *DHCP6) Run(ctx context.Context, notifyCh chan<- struct{}) {
 			renewInterval /= 2
 		}
 
-		if renewInterval < minRenewDuration {
-			renewInterval = minRenewDuration
-		}
+		renewInterval = max(renewInterval, minRenewDuration)
 
 		select {
 		case <-ctx.Done():

@@ -7,23 +7,11 @@ package containerd
 import (
 	"context"
 
-	"github.com/containerd/containerd/containers"
-	"github.com/containerd/containerd/contrib/seccomp"
-	"github.com/containerd/containerd/oci"
+	"github.com/containerd/containerd/v2/contrib/seccomp"
+	"github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
-
-// WithMemoryLimit sets the linux resource memory limit field.
-func WithMemoryLimit(limit int64) oci.SpecOpts {
-	return func(_ context.Context, _ oci.Client, _ *containers.Container, s *specs.Spec) error {
-		s.Linux.Resources.Memory = &specs.LinuxMemory{
-			Limit: &limit,
-			// DisableOOMKiller: &disable,
-		}
-
-		return nil
-	}
-}
 
 // WithRootfsPropagation sets the root filesystem propagation.
 func WithRootfsPropagation(rp string) oci.SpecOpts {

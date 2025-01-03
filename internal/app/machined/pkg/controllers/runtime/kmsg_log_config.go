@@ -58,7 +58,7 @@ func (ctrl *KmsgLogConfigController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo
-func (ctrl *KmsgLogConfigController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) (err error) {
+func (ctrl *KmsgLogConfigController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) (err error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -66,7 +66,7 @@ func (ctrl *KmsgLogConfigController) Run(ctx context.Context, r controller.Runti
 		case <-r.EventCh():
 		}
 
-		destinations := []*url.URL{}
+		var destinations []*url.URL
 
 		if ctrl.Cmdline != nil {
 			if val := ctrl.Cmdline.Get(constants.KernelParamLoggingKernel).First(); val != nil {

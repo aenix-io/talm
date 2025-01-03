@@ -110,9 +110,7 @@ func (ctrl *NfTablesChainController) Run(ctx context.Context, r controller.Runti
 
 		setID := uint32(0)
 
-		for iter := list.Iterator(); iter.Next(); {
-			chain := iter.Value()
-
+		for chain := range list.All() {
 			nfChain := conn.AddChain(&nftables.Chain{
 				Name:     chain.Metadata().ID(),
 				Table:    talosTable,
@@ -174,7 +172,7 @@ func (ctrl *NfTablesChainController) Run(ctx context.Context, r controller.Runti
 			return fmt.Errorf("error flushing nftables: %w", err)
 		}
 
-		chainNames, _ := safe.Map(list, func(chain *network.NfTablesChain) (string, error) { return chain.Metadata().ID(), nil }) //nolint:errcheck // doesn't fail
+		chainNames := safe.ToSlice(list, func(chain *network.NfTablesChain) string { return chain.Metadata().ID() })
 		logger.Info("nftables chains updated", zap.Strings("chains", chainNames))
 
 		r.ResetRestartBackoff()

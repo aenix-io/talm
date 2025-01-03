@@ -38,8 +38,7 @@ func (ctrl *KubePrismController) Name() string {
 	return "k8s.KubePrismController"
 }
 
-// Inputs implements controller.Controll
-// er interface.
+// Inputs implements controller.Controller interface.
 func (ctrl *KubePrismController) Inputs() []controller.Input {
 	return []controller.Input{
 		{
@@ -172,9 +171,7 @@ func (ctrl *KubePrismController) writeKubePrismStatus(
 		return fmt.Errorf("error listing KubePrism resources: %w", err)
 	}
 
-	for it := list.Iterator(); it.Next(); {
-		res := it.Value()
-
+	for res := range list.All() {
 		if ctrl.lb == nil || res.Metadata().ID() != k8s.KubePrismStatusesID {
 			if err = r.Destroy(ctx, res.Metadata()); err != nil {
 				return fmt.Errorf("error cleaning up KubePrism specs: %w", err)

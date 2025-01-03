@@ -7,7 +7,6 @@ package network_test
 
 import (
 	"context"
-	"log"
 	"net/netip"
 	"net/url"
 	"sync"
@@ -25,9 +24,9 @@ import (
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
@@ -54,7 +53,7 @@ func (suite *LinkConfigSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.runtime.RegisterController(&netctrl.DeviceConfigController{}))
@@ -216,6 +215,12 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 								DeviceAddresses: []string{"192.168.0.43/24"},
 							},
 							{
+								DeviceInterface: "eth8",
+								DeviceBridgePort: &v1alpha1.BridgePort{
+									BridgePortMaster: "br1",
+								},
+							},
+							{
 								DeviceInterface: "br0",
 								DeviceBridge: &v1alpha1.Bridge{
 									BridgedInterfaces: []string{"eth4", "eth5"},
@@ -225,10 +230,17 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 								},
 							},
 							{
+								DeviceInterface: "br1",
+								DeviceBridge:    &v1alpha1.Bridge{},
+							},
+							{
 								DeviceInterface: "br0",
 								DeviceBridge: &v1alpha1.Bridge{
 									BridgeSTP: &v1alpha1.STP{
 										STPEnabled: pointer.To(true),
+									},
+									BridgeVLAN: &v1alpha1.BridgeVLAN{
+										BridgeVLANFiltering: pointer.To(true),
 									},
 								},
 							},
@@ -285,9 +297,11 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 			"configuration/eth3",
 			"configuration/eth6",
 			"configuration/eth7",
+			"configuration/eth8",
 			"configuration/bond0",
 			"configuration/bond1",
 			"configuration/br0",
+			"configuration/br1",
 			"configuration/dummy0",
 			"configuration/wireguard0",
 		}, func(r *network.LinkSpec, asrt *assert.Assertions) {
@@ -344,12 +358,24 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 				asrt.True(r.TypedSpec().Up)
 				asrt.False(r.TypedSpec().Logical)
 				asrt.Equal("br0", r.TypedSpec().BridgeSlave.MasterName)
+			case "eth8":
+				asrt.True(r.TypedSpec().Up)
+				asrt.False(r.TypedSpec().Logical)
+				asrt.Equal("br1", r.TypedSpec().BridgeSlave.MasterName)
 			case "br0":
 				asrt.True(r.TypedSpec().Up)
 				asrt.True(r.TypedSpec().Logical)
 				asrt.Equal(nethelpers.LinkEther, r.TypedSpec().Type)
 				asrt.Equal(network.LinkKindBridge, r.TypedSpec().Kind)
-				asrt.Equal(true, r.TypedSpec().BridgeMaster.STP.Enabled)
+				asrt.True(r.TypedSpec().BridgeMaster.STP.Enabled)
+				asrt.True(r.TypedSpec().BridgeMaster.VLAN.FilteringEnabled)
+			case "br1":
+				asrt.True(r.TypedSpec().Up)
+				asrt.True(r.TypedSpec().Logical)
+				asrt.Equal(nethelpers.LinkEther, r.TypedSpec().Type)
+				asrt.Equal(network.LinkKindBridge, r.TypedSpec().Kind)
+				asrt.True(r.TypedSpec().BridgeMaster.STP.Enabled)
+				asrt.False(r.TypedSpec().BridgeMaster.VLAN.FilteringEnabled)
 			case "wireguard0":
 				asrt.True(r.TypedSpec().Up)
 				asrt.True(r.TypedSpec().Logical)
@@ -384,10 +410,14 @@ func (suite *LinkConfigSuite) TestDefaultUp() {
 		),
 	)
 
-	for _, link := range []string{"eth0", "eth1", "eth2", "eth3", "eth4"} {
+	for _, link := range []string{"eth5", "eth1", "eth2", "eth3", "eth4"} {
 		linkStatus := network.NewLinkStatus(network.NamespaceName, link)
 		linkStatus.TypedSpec().Type = nethelpers.LinkEther
 		linkStatus.TypedSpec().LinkState = true
+
+		if link == "eth5" {
+			linkStatus.TypedSpec().AltNames = []string{"eth0"}
+		}
 
 		suite.Require().NoError(suite.state.Create(suite.ctx, linkStatus))
 	}

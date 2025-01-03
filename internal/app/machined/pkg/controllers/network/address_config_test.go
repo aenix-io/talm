@@ -5,12 +5,12 @@
 package network_test
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -24,9 +24,9 @@ import (
 	"github.com/siderolabs/go-procfs/procfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
@@ -53,7 +53,7 @@ func (suite *AddressConfigSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.runtime.RegisterController(&netctrl.DeviceConfigController{}))
@@ -127,7 +127,7 @@ func (suite *AddressConfigSuite) TestCmdlineNoNetmask() {
 
 	ifaces, _ := net.Interfaces() //nolint:errcheck // ignoring error here as ifaces will be empty
 
-	sort.Slice(ifaces, func(i, j int) bool { return ifaces[i].Name < ifaces[j].Name })
+	slices.SortFunc(ifaces, func(a, b net.Interface) int { return cmp.Compare(a.Name, b.Name) })
 
 	ifaceName := ""
 

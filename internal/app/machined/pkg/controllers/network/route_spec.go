@@ -12,7 +12,7 @@ import (
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/hashicorp/go-multierror"
-	"github.com/jsimonetti/rtnetlink"
+	"github.com/jsimonetti/rtnetlink/v2"
 	"github.com/siderolabs/gen/value"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
@@ -105,7 +105,7 @@ func (ctrl *RouteSpecController) Run(ctx context.Context, r controller.Runtime, 
 
 		// loop over routes and make reconcile decision
 		for _, res := range list.Items {
-			route := res.(*network.RouteSpec) //nolint:forcetypeassert,errcheck
+			route := res.(*network.RouteSpec) //nolint:forcetypeassert
 
 			if err = ctrl.syncRoute(ctx, r, logger, conn, links, routes, route); err != nil {
 				multiErr = multierror.Append(multiErr, err)

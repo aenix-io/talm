@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -37,7 +37,7 @@ func (mock *serviceMock) Load(services ...system.Service) []string {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 
-	ids := []string{}
+	ids := make([]string, 0, len(services))
 
 	for _, svc := range services {
 		mock.services[svc.ID(nil)] = svc
@@ -89,13 +89,13 @@ func (mock *serviceMock) getIDs() []string {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 
-	ids := []string{}
+	ids := make([]string, 0, len(mock.services))
 
 	for id := range mock.services {
 		ids = append(ids, id)
 	}
 
-	sort.Strings(ids)
+	slices.Sort(ids)
 
 	return ids
 }
@@ -147,7 +147,7 @@ func (suite *ExtensionServiceSuite) TestReconcile() {
 		func() error {
 			ids := svcMock.getIDs()
 
-			if !reflect.DeepEqual(ids, []string{"ext-frr", "ext-hello-world"}) {
+			if !slices.Equal(ids, []string{"ext-frr", "ext-hello-world"}) {
 				return retry.ExpectedErrorf("services registered: %q", ids)
 			}
 

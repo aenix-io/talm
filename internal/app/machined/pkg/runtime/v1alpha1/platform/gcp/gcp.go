@@ -180,8 +180,8 @@ func (g *GCP) Configuration(ctx context.Context, r state.State) ([]byte, error) 
 	return []byte(userdata), nil
 }
 
-func (g *GCP) fetchConfiguration(_ context.Context) (string, error) {
-	userdata, err := metadata.InstanceAttributeValue("user-data")
+func (g *GCP) fetchConfiguration(ctx context.Context) (string, error) {
+	userdata, err := metadata.InstanceAttributeValueWithContext(ctx, "user-data")
 	if err != nil {
 		if _, ok := err.(metadata.NotDefinedError); ok {
 			return "", errors.ErrNoConfigSource
@@ -204,6 +204,9 @@ func (g *GCP) KernelArgs(string) procfs.Parameters {
 		procfs.NewParameter("console").Append("ttyS0"),
 		procfs.NewParameter(constants.KernelParamNetIfnames).Append("0"),
 		procfs.NewParameter(constants.KernelParamDashboardDisabled).Append("1"),
+		// disable 'kexec' as GCP VMs sometimes are stuck on kexec, and normal soft reboot
+		// doesn't take much longer on VMs
+		procfs.NewParameter("sysctl.kernel.kexec_load_disabled").Append("1"),
 	}
 }
 

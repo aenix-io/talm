@@ -8,13 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/hashicorp/go-multierror"
-	"github.com/jsimonetti/rtnetlink"
+	"github.com/jsimonetti/rtnetlink/v2"
 	"github.com/siderolabs/gen/pair/ordered"
 	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
@@ -98,13 +98,13 @@ func (ctrl *LinkSpecController) Run(ctx context.Context, r controller.Runtime, l
 		}
 
 		// list source network configuration resources
-		list, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.LinkSpecType, "", resource.VersionUndefined))
+		list, err := safe.ReaderList[*network.LinkSpec](ctx, r, resource.NewMetadata(network.NamespaceName, network.LinkSpecType, "", resource.VersionUndefined))
 		if err != nil {
 			return fmt.Errorf("error listing source network addresses: %w", err)
 		}
 
 		// add finalizers for all live resources
-		for _, res := range list.Items {
+		for res := range list.All() {
 			if res.Metadata().Phase() != resource.PhaseRunning {
 				continue
 			}
@@ -123,11 +123,9 @@ func (ctrl *LinkSpecController) Run(ctx context.Context, r controller.Runtime, l
 		// loop over links and make reconcile decision
 		var multiErr *multierror.Error
 
-		SortBonds(list.Items)
+		SortBonds(&list)
 
-		for _, res := range list.Items {
-			link := res.(*network.LinkSpec) //nolint:forcetypeassert,errcheck
-
+		for link := range list.All() {
 			if err = ctrl.syncLink(ctx, r, logger, conn, wgClient, &links, link); err != nil {
 				multiErr = multierror.Append(multiErr, err)
 			}
@@ -143,10 +141,10 @@ func (ctrl *LinkSpecController) Run(ctx context.Context, r controller.Runtime, l
 
 // SortBonds sort resources in increasing order, except it places slave interfaces right after the bond
 // in proper order.
-func SortBonds(items []resource.Resource) {
-	sort.Slice(items, func(i, j int) bool {
-		left := items[i].(*network.LinkSpec).TypedSpec()
-		right := items[j].(*network.LinkSpec).TypedSpec()
+func SortBonds(items *safe.List[*network.LinkSpec]) {
+	items.SortFunc(func(ll, rr *network.LinkSpec) int {
+		left := ll.TypedSpec()
+		right := rr.TypedSpec()
 
 		l := ordered.MakeTriple(left.Name, 0, "")
 		if left.BondSlave.MasterName != "" {
@@ -158,13 +156,31 @@ func SortBonds(items []resource.Resource) {
 			r = ordered.MakeTriple(right.BondSlave.MasterName, right.BondSlave.SlaveIndex, right.Name)
 		}
 
-		return l.LessThan(r)
+		return l.Compare(r)
 	})
 }
 
-func findLink(links []rtnetlink.LinkMessage, name string) *rtnetlink.LinkMessage {
+func findLink(links []rtnetlink.LinkMessage, name string, allowAliases bool) *rtnetlink.LinkMessage {
+	if name == "" {
+		return nil // should never match
+	}
+
 	for i, link := range links {
 		if link.Attributes.Name == name {
+			return &links[i]
+		}
+	}
+
+	if !allowAliases {
+		return nil
+	}
+
+	for i, link := range links {
+		if pointer.SafeDeref(link.Attributes.Alias) == name {
+			return &links[i]
+		}
+
+		if slices.Index(link.Attributes.AltNames, name) != -1 {
 			return &links[i]
 		}
 	}
@@ -205,7 +221,7 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 	case resource.PhaseTearingDown:
 		// TODO: should we bring link down if it's physical and the spec was torn down?
 		if link.TypedSpec().Logical {
-			existing := findLink(*links, link.TypedSpec().Name)
+			existing := findLink(*links, link.TypedSpec().Name, false) // logical links don't have aliases
 
 			if existing != nil {
 				if err := conn.Link.Delete(existing.Index); err != nil {
@@ -229,7 +245,15 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 			return fmt.Errorf("error removing finalizer: %w", err)
 		}
 	case resource.PhaseRunning:
-		existing := findLink(*links, link.TypedSpec().Name)
+		existing := findLink(*links, link.TypedSpec().Name, !link.TypedSpec().Logical) // allow aliases for physical links
+
+		var existingRawLinkData []byte
+
+		if existing != nil && existing.Attributes != nil && existing.Attributes.Info != nil && existing.Attributes.Info.Data != nil {
+			if existingLinkData, ok := existing.Attributes.Info.Data.(*rtnetlink.LinkData); ok {
+				existingRawLinkData = existingLinkData.Data
+			}
+		}
 
 		// check if type/kind matches for the existing logical link
 		if existing != nil && link.TypedSpec().Logical {
@@ -261,7 +285,11 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 			if !replace && link.TypedSpec().Kind == network.LinkKindVLAN {
 				var existingVLAN network.VLANSpec
 
-				if err := networkadapter.VLANSpec(&existingVLAN).Decode(existing.Attributes.Info.Data); err != nil {
+				if existingRawLinkData == nil {
+					return fmt.Errorf("existing link %q has no data, can't decode VLAN settings", link.TypedSpec().Name)
+				}
+
+				if err := networkadapter.VLANSpec(&existingVLAN).Decode(existingRawLinkData); err != nil {
 					return fmt.Errorf("error decoding VLAN properties on %q: %w", link.TypedSpec().Name, err)
 				}
 
@@ -303,7 +331,7 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 
 			// VLAN settings should be set on interface creation (parent + VLAN settings)
 			if link.TypedSpec().ParentName != "" {
-				parent := findLink(*links, link.TypedSpec().ParentName)
+				parent := findLink(*links, link.TypedSpec().ParentName, true) // allow aliases for physical links/parents
 				if parent == nil {
 					// parent doesn't exist yet, skip it
 					return nil
@@ -326,7 +354,10 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 					Type: parentIndex,
 					Info: &rtnetlink.LinkInfo{
 						Kind: link.TypedSpec().Kind,
-						Data: data,
+						Data: &rtnetlink.LinkData{
+							Name: link.TypedSpec().Kind,
+							Data: data,
+						},
 					},
 				},
 			}); err != nil {
@@ -341,7 +372,7 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 				return fmt.Errorf("error listing links: %w", err)
 			}
 
-			existing = findLink(*links, link.TypedSpec().Name)
+			existing = findLink(*links, link.TypedSpec().Name, false) // link is created by name
 			if existing == nil {
 				return fmt.Errorf("created link %q not found in the link list", link.TypedSpec().Name)
 			}
@@ -351,7 +382,11 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 		if link.TypedSpec().Kind == network.LinkKindBond {
 			var existingBond network.BondMasterSpec
 
-			if err := networkadapter.BondMasterSpec(&existingBond).Decode(existing.Attributes.Info.Data); err != nil {
+			if existingRawLinkData == nil {
+				return fmt.Errorf("existing link %q has no data, can't decode bond settings", link.TypedSpec().Name)
+			}
+
+			if err := networkadapter.BondMasterSpec(&existingBond).Decode(existingRawLinkData); err != nil {
 				return fmt.Errorf("error parsing bond attributes for %q: %w", link.TypedSpec().Name, err)
 			}
 
@@ -403,7 +438,10 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 					Attributes: &rtnetlink.LinkAttributes{
 						Info: &rtnetlink.LinkInfo{
 							Kind: existing.Attributes.Info.Kind,
-							Data: data,
+							Data: &rtnetlink.LinkData{
+								Name: existing.Attributes.Info.Kind,
+								Data: data,
+							},
 						},
 					},
 				}); err != nil {
@@ -418,7 +456,11 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 		if link.TypedSpec().Kind == network.LinkKindBridge {
 			var existingBridge network.BridgeMasterSpec
 
-			if err := networkadapter.BridgeMasterSpec(&existingBridge).Decode(existing.Attributes.Info.Data); err != nil {
+			if existingRawLinkData == nil {
+				return fmt.Errorf("existing link %q has no data, can't decode bridge settings", link.TypedSpec().Name)
+			}
+
+			if err := networkadapter.BridgeMasterSpec(&existingBridge).Decode(existingRawLinkData); err != nil {
 				return fmt.Errorf("error parsing bridge attributes for %q: %w", link.TypedSpec().Name, err)
 			}
 
@@ -470,7 +512,10 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 					Attributes: &rtnetlink.LinkAttributes{
 						Info: &rtnetlink.LinkInfo{
 							Kind: existing.Attributes.Info.Kind,
-							Data: data,
+							Data: &rtnetlink.LinkData{
+								Name: existing.Attributes.Info.Kind,
+								Data: data,
+							},
 						},
 					},
 				}); err != nil {
@@ -570,7 +615,7 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 
 		bondMasterName := link.TypedSpec().BondSlave.MasterName
 		if bondMasterName != "" {
-			if master := findLink(*links, bondMasterName); master != nil {
+			if master := findLink(*links, bondMasterName, false); master != nil { // bond master can't be an alias
 				masterName = bondMasterName
 				masterIndex = master.Index
 			}
@@ -578,7 +623,7 @@ func (ctrl *LinkSpecController) syncLink(ctx context.Context, r controller.Runti
 
 		bridgeMasterName := link.TypedSpec().BridgeSlave.MasterName
 		if bridgeMasterName != "" {
-			if master := findLink(*links, bridgeMasterName); master != nil {
+			if master := findLink(*links, bridgeMasterName, false); master != nil { // bridge master can't be an alias
 				masterName = bridgeMasterName
 				masterIndex = master.Index
 			}

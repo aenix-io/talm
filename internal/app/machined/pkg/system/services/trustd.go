@@ -12,13 +12,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
-	"github.com/containerd/containerd/oci"
-	"github.com/containerd/containerd/pkg/cap"
+	"github.com/containerd/containerd/v2/pkg/cap"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/cosi-project/runtime/api/v1alpha1"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/protobuf/server"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/go-debug"
 	"google.golang.org/grpc"
 
@@ -30,6 +32,7 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner/containerd"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner/restart"
 	"github.com/aenix-io/talm/internal/pkg/environment"
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
@@ -46,14 +49,14 @@ type Trustd struct {
 }
 
 // ID implements the Service interface.
-func (t *Trustd) ID(r runtime.Runtime) string {
+func (t *Trustd) ID(runtime.Runtime) string {
 	return "trustd"
 }
 
 // PreFunc implements the Service interface.
 //
 //nolint:gocyclo
-func (t *Trustd) PreFunc(ctx context.Context, r runtime.Runtime) error {
+func (t *Trustd) PreFunc(_ context.Context, r runtime.Runtime) error {
 	// filter apid access to make sure apid can only access its certificates
 	resources := state.Filter(
 		r.State().V1Alpha2().Resources(),
@@ -93,6 +96,10 @@ func (t *Trustd) PreFunc(ctx context.Context, r runtime.Runtime) error {
 		return err
 	}
 
+	if err := selinux.SetLabel(constants.TrustdRuntimeSocketPath, constants.TrustdRuntimeSocketLabel); err != nil {
+		return err
+	}
+
 	// chown the socket path to make it accessible to the apid
 	if err := os.Chown(constants.TrustdRuntimeSocketPath, constants.TrustdUserID, constants.TrustdUserID); err != nil {
 		return err
@@ -109,7 +116,7 @@ func (t *Trustd) PreFunc(ctx context.Context, r runtime.Runtime) error {
 }
 
 // PostFunc implements the Service interface.
-func (t *Trustd) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
+func (t *Trustd) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 	t.runtimeServer.Stop()
 
 	return os.RemoveAll(constants.TrustdRuntimeSocketPath)
@@ -124,7 +131,7 @@ func (t *Trustd) Condition(r runtime.Runtime) conditions.Condition {
 }
 
 // DependsOn implements the Service interface.
-func (t *Trustd) DependsOn(r runtime.Runtime) []string {
+func (t *Trustd) DependsOn(runtime.Runtime) []string {
 	return []string{"containerd"}
 }
 
@@ -138,12 +145,14 @@ func (t *Trustd) Runner(r runtime.Runtime) (runner.Runner, error) {
 
 	// Set the mounts.
 	mounts := []specs.Mount{
-		{Type: "bind", Destination: "/tmp", Source: "/tmp", Options: []string{"rbind", "rshared", "rw"}},
 		{Type: "bind", Destination: filepath.Dir(constants.TrustdRuntimeSocketPath), Source: filepath.Dir(constants.TrustdRuntimeSocketPath), Options: []string{"rbind", "ro"}},
 	}
 
 	env := environment.Get(r.Config())
-	env = append(env, constants.TcellMinimizeEnvironment)
+	env = append(env,
+		constants.TcellMinimizeEnvironment,
+		"GOMEMLIMIT="+strconv.Itoa(constants.CgroupTrustdMaxMemory/5*4),
+	)
 
 	if debug.RaceEnabled {
 		env = append(env, "GORACE=halt_on_error=1")
@@ -155,8 +164,10 @@ func (t *Trustd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithContainerdAddress(constants.SystemContainerdAddress),
 		runner.WithEnv(env),
+		runner.WithCgroupPath(constants.CgroupTrustd),
+		runner.WithGracefulShutdownTimeout(15*time.Second),
+		runner.WithSelinuxLabel(constants.SelinuxLabelTrustd),
 		runner.WithOCISpecOpts(
-			containerd.WithMemoryLimit(int64(1000000*512)),
 			oci.WithDroppedCapabilities(cap.Known()),
 			oci.WithHostNamespace(specs.NetworkNamespace),
 			oci.WithMounts(mounts),

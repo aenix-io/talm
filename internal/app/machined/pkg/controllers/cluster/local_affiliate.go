@@ -113,7 +113,7 @@ func (ctrl *LocalAffiliateController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo,cyclop
-func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -266,8 +266,8 @@ func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runt
 					})
 
 					// mix in discovered public IPs
-					for iter := discoveredPublicIPs.Iterator(); iter.Next(); {
-						addr := iter.Value().TypedSpec().Address.Addr()
+					for res := range discoveredPublicIPs.All() {
+						addr := res.TypedSpec().Address.Addr()
 
 						if slices.ContainsFunc(endpointIPs, func(a netip.Addr) bool { return addr == a }) {
 							// this address is already published
@@ -288,6 +288,13 @@ func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runt
 					spec.KubeSpan.Endpoints = xslices.Map(endpointIPs, func(addr netip.Addr) netip.AddrPort {
 						return netip.AddrPortFrom(addr, constants.KubeSpanDefaultPort)
 					})
+
+					// add extra announced endpoints, deduplicating on the way
+					for _, addr := range kubespanConfig.TypedSpec().ExtraEndpoints {
+						if !slices.Contains(spec.KubeSpan.Endpoints, addr) {
+							spec.KubeSpan.Endpoints = append(spec.KubeSpan.Endpoints, addr)
+						}
+					}
 				}
 
 				return nil
@@ -304,9 +311,7 @@ func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runt
 			return fmt.Errorf("error listing resources: %w", err)
 		}
 
-		for it := list.Iterator(); it.Next(); {
-			res := it.Value()
-
+		for res := range list.All() {
 			if res.Metadata().Owner() != ctrl.Name() {
 				continue
 			}

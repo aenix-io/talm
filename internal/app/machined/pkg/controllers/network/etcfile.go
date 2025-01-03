@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"iter"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -18,12 +20,14 @@ import (
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
-	"github.com/siderolabs/gen/value"
+	"github.com/siderolabs/gen/xiter"
+	"github.com/siderolabs/gen/xslices"
 	"go.uber.org/zap"
 
 	efiles "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/files"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	talosconfig "github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/files"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
@@ -89,7 +93,7 @@ func (ctrl *EtcFileController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo,cyclop
-func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -136,17 +140,16 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 			}
 		}
 
-		var hostnameStatusSpec *network.HostnameStatusSpec
-		if hostnameStatus != nil {
-			hostnameStatusSpec = hostnameStatus.TypedSpec()
-		}
-
 		if resolverStatus != nil && hostDNSCfg != nil && !ctrl.V1Alpha1Mode.InContainer() {
 			// in container mode, keep the original resolv.conf to use the resolvers supplied by the container runtime
 			if err = safe.WriterModify(ctx, r, files.NewEtcFileSpec(files.NamespaceName, "resolv.conf"),
 				func(r *files.EtcFileSpec) error {
-					r.TypedSpec().Contents = renderResolvConf(pickNameservers(hostDNSCfg, resolverStatus), hostnameStatusSpec, cfgProvider)
+					r.TypedSpec().Contents = renderResolvConf(
+						pickNameservers(hostDNSCfg, resolverStatus),
+						resolverStatus.TypedSpec().SearchDomains,
+					)
 					r.TypedSpec().Mode = 0o644
+					r.TypedSpec().SelinuxLabel = constants.EtcSelinuxLabel
 
 					return nil
 				}); err != nil {
@@ -155,19 +158,22 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 		}
 
 		if resolverStatus != nil && hostDNSCfg != nil {
-			dnsServers := resolverStatus.TypedSpec().DNSServers
+			dnsServers := xslices.FilterInPlace(
+				[]netip.Addr{hostDNSCfg.TypedSpec().ServiceHostDNSAddress},
+				netip.Addr.IsValid,
+			)
 
-			if !value.IsZero(hostDNSCfg.TypedSpec().ServiceHostDNSAddress) {
-				dnsServers = []netip.Addr{hostDNSCfg.TypedSpec().ServiceHostDNSAddress}
+			if len(dnsServers) == 0 {
+				dnsServers = resolverStatus.TypedSpec().DNSServers
 			}
 
-			conf := renderResolvConf(dnsServers, hostnameStatusSpec, cfgProvider)
+			conf := renderResolvConf(slices.All(dnsServers), resolverStatus.TypedSpec().SearchDomains)
 
 			if err = os.MkdirAll(filepath.Dir(ctrl.PodResolvConfPath), 0o755); err != nil {
 				return fmt.Errorf("error creating pod resolv.conf dir: %w", err)
 			}
 
-			err = efiles.UpdateFile(ctrl.PodResolvConfPath, conf, 0o644)
+			err = efiles.UpdateFile(ctrl.PodResolvConfPath, conf, 0o644, constants.EtcSelinuxLabel)
 			if err != nil {
 				return fmt.Errorf("error writing pod resolv.conf: %w", err)
 			}
@@ -178,6 +184,7 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 				func(r *files.EtcFileSpec) error {
 					r.TypedSpec().Contents, err = ctrl.renderHosts(hostnameStatus.TypedSpec(), nodeAddressStatus.TypedSpec(), cfgProvider)
 					r.TypedSpec().Mode = 0o644
+					r.TypedSpec().SelinuxLabel = constants.EtcSelinuxLabel
 
 					return err
 				}); err != nil {
@@ -189,18 +196,18 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 	}
 }
 
-var localDNS = []netip.Addr{netip.MustParseAddr("127.0.0.53")}
+var localDNS = xiter.Single2(0, netip.MustParseAddr("127.0.0.53"))
 
-func pickNameservers(hostDNSCfg *network.HostDNSConfig, resolverStatus *network.ResolverStatus) []netip.Addr {
+func pickNameservers(hostDNSCfg *network.HostDNSConfig, resolverStatus *network.ResolverStatus) iter.Seq2[int, netip.Addr] {
 	if hostDNSCfg.TypedSpec().Enabled {
 		// local dns resolve cache enabled, route host dns requests to 127.0.0.1
 		return localDNS
 	}
 
-	return resolverStatus.TypedSpec().DNSServers
+	return slices.All(resolverStatus.TypedSpec().DNSServers)
 }
 
-func renderResolvConf(nameservers []netip.Addr, hostnameStatus *network.HostnameStatusSpec, cfgProvider talosconfig.Config) []byte {
+func renderResolvConf(nameservers iter.Seq2[int, netip.Addr], searchDomains []string) []byte {
 	var buf bytes.Buffer
 
 	for i, ns := range nameservers {
@@ -212,13 +219,8 @@ func renderResolvConf(nameservers []netip.Addr, hostnameStatus *network.Hostname
 		fmt.Fprintf(&buf, "nameserver %s\n", ns)
 	}
 
-	var disableSearchDomain bool
-	if cfgProvider != nil && cfgProvider.Machine() != nil {
-		disableSearchDomain = cfgProvider.Machine().Network().DisableSearchDomain()
-	}
-
-	if !disableSearchDomain && hostnameStatus != nil && hostnameStatus.Domainname != "" {
-		fmt.Fprintf(&buf, "\nsearch %s\n", hostnameStatus.Domainname)
+	if len(searchDomains) > 0 {
+		fmt.Fprintf(&buf, "\nsearch %s\n", strings.Join(searchDomains, " "))
 	}
 
 	return buf.Bytes()
@@ -229,9 +231,7 @@ func (ctrl *EtcFileController) renderHosts(hostnameStatus *network.HostnameStatu
 
 	tabW := tabwriter.NewWriter(&buf, 0, 0, 1, ' ', 0)
 
-	write := func(s string) {
-		tabW.Write([]byte(s)) //nolint:errcheck
-	}
+	write := func(s string) { tabW.Write([]byte(s)) } //nolint:errcheck
 
 	write("127.0.0.1\tlocalhost\n")
 

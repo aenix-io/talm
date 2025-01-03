@@ -65,10 +65,12 @@ func (suite *EventsSuite) TestOverflow() {
 	suite.Assert().Equal([]events.ServiceEvent(nil), e.Get(0))
 	suite.assertEvents([]string{strconv.Itoa(numEvents - 1)}, e.Get(1))
 
-	expected := []string{}
+	var expected []string
+
 	for i := numEvents - events.MaxEventsToKeep; i < numEvents; i++ {
 		expected = append(expected, strconv.Itoa(i))
 	}
+
 	suite.assertEvents(expected, e.Get(events.MaxEventsToKeep*10))
 	suite.assertEvents(expected[len(expected)-3:], e.Get(3))
 }

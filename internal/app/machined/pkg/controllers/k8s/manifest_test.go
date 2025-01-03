@@ -8,8 +8,7 @@ package k8s_test
 import (
 	"context"
 	"fmt"
-	"log"
-	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -22,11 +21,11 @@ import (
 	"github.com/siderolabs/gen/xslices"
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	k8sadapter "github.com/aenix-io/talm/internal/app/machined/pkg/adapters/k8s"
 	k8sctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/k8s"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/k8s"
 	"github.com/siderolabs/talos/pkg/machinery/resources/secrets"
@@ -51,7 +50,7 @@ func (suite *ManifestSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.runtime.RegisterController(&k8sctrl.ManifestController{}))
@@ -81,7 +80,7 @@ func (suite *ManifestSuite) assertManifests(manifests []string) error {
 
 	ids := xslices.Map(resources.Items, func(r resource.Resource) string { return r.Metadata().ID() })
 
-	if !reflect.DeepEqual(manifests, ids) {
+	if !slices.Equal(manifests, ids) {
 		return retry.ExpectedErrorf("expected %q, got %q", manifests, ids)
 	}
 
@@ -109,9 +108,8 @@ var defaultManifestSpec = k8s.BootstrapManifestsConfigSpec{
 
 	DNSServiceIP: "192.168.0.1",
 
-	FlannelEnabled:  true,
-	FlannelImage:    "foo/bar",
-	FlannelCNIImage: "foo/bar",
+	FlannelEnabled: true,
+	FlannelImage:   "foo/bar",
 
 	PodSecurityPolicyEnabled: true,
 }
@@ -219,14 +217,14 @@ func (suite *ManifestSuite) TestReconcileKubeProxyExtraArgs() {
 	)
 	suite.Require().NoError(err)
 
-	manifest := r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
+	manifest := r.(*k8s.Manifest) //nolint:forcetypeassert
 	suite.Assert().Len(k8sadapter.Manifest(manifest).Objects(), 3)
 
 	suite.Assert().Equal("DaemonSet", k8sadapter.Manifest(manifest).Objects()[0].GetKind())
 
 	ds := k8sadapter.Manifest(manifest).Objects()[0].Object
 	containerSpec := ds["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0]
-	args := containerSpec.(map[string]any)["command"].([]any) //nolint:errcheck,forcetypeassert
+	args := containerSpec.(map[string]any)["command"].([]any) //nolint:forcetypeassert
 
 	suite.Assert().Equal("--bind-address=\"::\"", args[len(args)-1])
 }
@@ -275,7 +273,7 @@ func (suite *ManifestSuite) TestReconcileIPv6() {
 	)
 	suite.Require().NoError(err)
 
-	manifest := r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
+	manifest := r.(*k8s.Manifest) //nolint:forcetypeassert
 	suite.Assert().Len(k8sadapter.Manifest(manifest).Objects(), 1)
 
 	service := k8sadapter.Manifest(manifest).Objects()[0]
@@ -304,7 +302,7 @@ func (suite *ManifestSuite) TestReconcileIPv6() {
 	)
 	suite.Require().NoError(err)
 
-	manifest = r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
+	manifest = r.(*k8s.Manifest) //nolint:forcetypeassert
 	suite.Assert().Len(k8sadapter.Manifest(manifest).Objects(), 5)
 
 	configmap := k8sadapter.Manifest(manifest).Objects()[3]

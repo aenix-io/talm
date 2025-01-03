@@ -11,6 +11,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/siderolabs/gen/optional"
 	"go.uber.org/zap"
@@ -93,14 +94,14 @@ func (ctrl *NodeIdentityController) Run(ctx context.Context, r controller.Runtim
 
 		var localIdentity cluster.IdentitySpec
 
-		if err := controllers.LoadOrNewFromFile(filepath.Join(ctrl.StatePath, constants.NodeIdentityFilename), &localIdentity, func(v interface{}) error {
+		if err := controllers.LoadOrNewFromFile(filepath.Join(ctrl.StatePath, constants.NodeIdentityFilename), &localIdentity, func(v any) error {
 			return clusteradapter.IdentitySpec(v.(*cluster.IdentitySpec)).Generate()
 		}); err != nil {
 			return fmt.Errorf("error caching node identity: %w", err)
 		}
 
-		if err := r.Modify(ctx, cluster.NewIdentity(cluster.NamespaceName, cluster.LocalIdentity), func(r resource.Resource) error {
-			*r.(*cluster.Identity).TypedSpec() = localIdentity
+		if err := safe.WriterModify(ctx, r, cluster.NewIdentity(cluster.NamespaceName, cluster.LocalIdentity), func(r *cluster.Identity) error {
+			*r.TypedSpec() = localIdentity
 
 			return nil
 		}); err != nil {
@@ -108,12 +109,13 @@ func (ctrl *NodeIdentityController) Run(ctx context.Context, r controller.Runtim
 		}
 
 		// generate `/etc/machine-id` from node identity
-		if err := r.Modify(ctx, files.NewEtcFileSpec(files.NamespaceName, "machine-id"),
-			func(r resource.Resource) error {
+		if err := safe.WriterModify(ctx, r, files.NewEtcFileSpec(files.NamespaceName, "machine-id"),
+			func(r *files.EtcFileSpec) error {
 				var err error
 
-				r.(*files.EtcFileSpec).TypedSpec().Contents, err = clusteradapter.IdentitySpec(&localIdentity).ConvertMachineID()
-				r.(*files.EtcFileSpec).TypedSpec().Mode = 0o444
+				r.TypedSpec().Contents, err = clusteradapter.IdentitySpec(&localIdentity).ConvertMachineID()
+				r.TypedSpec().Mode = 0o444
+				r.TypedSpec().SelinuxLabel = constants.EtcSelinuxLabel
 
 				return err
 			}); err != nil {

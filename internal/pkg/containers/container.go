@@ -29,6 +29,7 @@ type Container struct {
 	Display          string // Friendly Name
 	Name             string // container name
 	ID               string // container sha/id
+	UID              string // container uid
 	Digest           string // Container Digest
 	Image            string
 	PodName          string
@@ -89,7 +90,8 @@ func (c *Container) GetLogChunker(ctx context.Context, follow bool, tailLines in
 			}
 		}
 
-		chunkerOptions := []file.Option{}
+		var chunkerOptions []file.Option
+
 		if follow {
 			chunkerOptions = append(chunkerOptions, file.WithFollow())
 		}

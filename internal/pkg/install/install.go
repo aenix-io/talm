@@ -13,11 +13,11 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/cio"
-	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/oci"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/oci"
+	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/siderolabs/go-kmsg"
 	"github.com/siderolabs/go-procfs/procfs"
@@ -29,17 +29,23 @@ import (
 	"github.com/aenix-io/talm/internal/pkg/containers/image"
 	"github.com/aenix-io/talm/internal/pkg/environment"
 	"github.com/aenix-io/talm/internal/pkg/extensions"
+	"github.com/aenix-io/talm/internal/pkg/selinux"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	configcore "github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/config"
-	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 )
 
 // RunInstallerContainer performs an installation via the installer container.
 //
 //nolint:gocyclo,cyclop
-func RunInstallerContainer(disk, platform, ref string, cfg configcore.Config, cfgContainer configcore.Container, opts ...Option) error {
+func RunInstallerContainer(
+	disk, platform, ref string,
+	cfg configcore.Config,
+	cfgContainer configcore.Container,
+	registryBuilder image.RegistriesBuilder,
+	opts ...Option,
+) error {
 	const containerID = "upgrade"
 
 	options := DefaultInstallOptions()
@@ -50,16 +56,10 @@ func RunInstallerContainer(disk, platform, ref string, cfg configcore.Config, cf
 		}
 	}
 
-	var (
-		registriesConfig config.Registries
-		extensionsConfig []config.Extension
-	)
+	var extensionsConfig []config.Extension
 
 	if cfg != nil && cfg.Machine() != nil {
-		registriesConfig = cfg.Machine().Registries()
 		extensionsConfig = cfg.Machine().Install().Extensions()
-	} else {
-		registriesConfig = &v1alpha1.RegistriesConfig{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -88,7 +88,7 @@ func RunInstallerContainer(disk, platform, ref string, cfg configcore.Config, cf
 	if img == nil || err != nil && errdefs.IsNotFound(err) {
 		log.Printf("pulling %q", ref)
 
-		img, err = image.Pull(ctx, registriesConfig, client, ref)
+		img, err = image.Pull(ctx, registryBuilder, client, ref)
 	}
 
 	if err != nil {
@@ -101,7 +101,7 @@ func RunInstallerContainer(disk, platform, ref string, cfg configcore.Config, cf
 	}
 
 	if extensionsConfig != nil {
-		if err = puller.PullAndMount(ctx, registriesConfig, extensionsConfig); err != nil {
+		if err = puller.PullAndMount(ctx, registryBuilder, extensionsConfig); err != nil {
 			return err
 		}
 	}
@@ -184,6 +184,8 @@ func RunInstallerContainer(disk, platform, ref string, cfg configcore.Config, cf
 		constants.KernelParamEquinixMetalEvents,
 		constants.KernelParamDashboardDisabled,
 		constants.KernelParamNetIfnames,
+		constants.KernelParamSELinux,
+		constants.KernelParamSELinuxEnforcing,
 	} {
 		if c := procfs.ProcCmdline().Get(preservedArg).First(); c != nil {
 			args = append(args, "--extra-kernel-arg", fmt.Sprintf("%s=%s", preservedArg, *c))
@@ -204,11 +206,14 @@ func RunInstallerContainer(disk, platform, ref string, cfg configcore.Config, cf
 		oci.WithReadonlyPaths(nil),
 		oci.WithWriteableSysfs,
 		oci.WithWriteableCgroupfs,
-		oci.WithSelinuxLabel(""),
 		oci.WithApparmorProfile(""),
 		oci.WithSeccompUnconfined,
 		oci.WithAllDevicesAllowed,
 		oci.WithEnv(environment.Get(cfg)),
+	}
+
+	if selinux.IsEnabled() {
+		specOpts = append(specOpts, oci.WithSelinuxLabel(constants.SelinuxLabelInstaller))
 	}
 
 	containerOpts := []containerd.NewContainerOpts{

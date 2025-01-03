@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/containerd/containerd/oci"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/hashicorp/go-envparse"
@@ -26,7 +26,7 @@ import (
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system/runner/restart"
 	"github.com/aenix-io/talm/internal/pkg/capability"
 	"github.com/aenix-io/talm/internal/pkg/environment"
-	"github.com/aenix-io/talm/internal/pkg/mount"
+	"github.com/aenix-io/talm/internal/pkg/mount/v2"
 	"github.com/siderolabs/talos/pkg/conditions"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	extservices "github.com/siderolabs/talos/pkg/machinery/extensions/services"
@@ -39,7 +39,7 @@ import (
 type Extension struct {
 	Spec extservices.Spec
 
-	overlay *mount.Point
+	overlayUnmounter func() error
 }
 
 // ID implements the Service interface.
@@ -50,26 +50,29 @@ func (svc *Extension) ID(r runtime.Runtime) string {
 // PreFunc implements the Service interface.
 func (svc *Extension) PreFunc(ctx context.Context, r runtime.Runtime) error {
 	// re-mount service rootfs as overlay rw mount to allow containerd to mount there /dev, /proc, etc.
-	svc.overlay = mount.NewMountPoint(
-		"",
-		filepath.Join(constants.ExtensionServiceRootfsPath, svc.Spec.Name),
-		"",
-		0,
-		"",
-		mount.WithFlags(mount.Overlay|mount.SystemOverlay),
+	rootfsPath := filepath.Join(constants.ExtensionServiceRootfsPath, svc.Spec.Name)
+
+	// TODO: label system extensions
+	overlay := mount.NewSystemOverlay(
+		[]string{rootfsPath},
+		rootfsPath,
 	)
 
-	return svc.overlay.Mount()
+	var err error
+
+	svc.overlayUnmounter, err = overlay.Mount()
+
+	return err
 }
 
 // PostFunc implements the Service interface.
 func (svc *Extension) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
-	return svc.overlay.Unmount()
+	return svc.overlayUnmounter()
 }
 
 // Condition implements the Service interface.
 func (svc *Extension) Condition(r runtime.Runtime) conditions.Condition {
-	conds := []conditions.Condition{}
+	var conds []conditions.Condition
 
 	if svc.Spec.Container.EnvironmentFile != "" {
 		// add a dependency on the environment file
@@ -113,7 +116,6 @@ func (svc *Extension) getOCIOptions(envVars []string, mounts []specs.Mount) []oc
 	ociOpts := []oci.SpecOpts{
 		oci.WithRootFSPath(filepath.Join(constants.ExtensionServiceRootfsPath, svc.Spec.Name)),
 		containerd.WithRootfsPropagation(svc.Spec.Container.Security.RootfsPropagation),
-		oci.WithCgroup(filepath.Join(constants.CgroupExtensions, svc.Spec.Name)),
 		oci.WithMounts(mounts),
 		oci.WithHostNamespace(specs.NetworkNamespace),
 		oci.WithSelinuxLabel(""),
@@ -202,20 +204,25 @@ func (svc *Extension) Runner(r runtime.Runtime) (runner.Runner, error) {
 
 	ociSpecOpts := svc.getOCIOptions(envVars, mounts)
 
-	debug := false
+	logToConsole := false
 
 	if r.Config() != nil {
-		debug = r.Config().Debug()
+		logToConsole = r.Config().Debug()
+	}
+
+	if svc.Spec.LogToConsole {
+		logToConsole = true
 	}
 
 	return restart.New(containerd.NewRunner(
-		debug,
+		logToConsole,
 		&args,
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithNamespace(constants.SystemContainerdNamespace),
 		runner.WithContainerdAddress(constants.SystemContainerdAddress),
 		runner.WithEnv(environment.Get(r.Config())),
 		runner.WithOCISpecOpts(ociSpecOpts...),
+		runner.WithCgroupPath(filepath.Join(constants.CgroupExtensions, svc.Spec.Name)),
 		runner.WithOOMScoreAdj(-600),
 	),
 		restart.WithType(restartType),

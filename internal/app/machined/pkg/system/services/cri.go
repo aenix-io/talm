@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/defaults"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/defaults"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
@@ -52,17 +52,17 @@ func (c *CRI) Client() (*containerd.Client, error) {
 }
 
 // ID implements the Service interface.
-func (c *CRI) ID(r runtime.Runtime) string {
+func (c *CRI) ID(runtime.Runtime) string {
 	return "cri"
 }
 
 // PreFunc implements the Service interface.
-func (c *CRI) PreFunc(ctx context.Context, r runtime.Runtime) error {
+func (c *CRI) PreFunc(context.Context, runtime.Runtime) error {
 	return os.MkdirAll(defaults.DefaultRootDir, os.ModeDir)
 }
 
 // PostFunc implements the Service interface.
-func (c *CRI) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
+func (c *CRI) PostFunc(runtime.Runtime, events.ServiceState) (err error) {
 	if c.client != nil {
 		return c.client.Close()
 	}
@@ -76,7 +76,7 @@ func (c *CRI) Condition(r runtime.Runtime) conditions.Condition {
 }
 
 // DependsOn implements the Service interface.
-func (c *CRI) DependsOn(r runtime.Runtime) []string {
+func (c *CRI) DependsOn(runtime.Runtime) []string {
 	return nil
 }
 
@@ -98,9 +98,15 @@ func (c *CRI) Runner(r runtime.Runtime) (runner.Runner, error) {
 		r.Config().Debug(),
 		args,
 		runner.WithLoggingManager(r.Logging()),
-		runner.WithEnv(environment.Get(r.Config())),
+		runner.WithEnv(append(
+			environment.Get(r.Config()),
+			// append a default value for XDG_RUNTIME_DIR for the services running on the host
+			// see https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+			"XDG_RUNTIME_DIR=/run",
+		)),
 		runner.WithOOMScoreAdj(-500),
 		runner.WithCgroupPath(constants.CgroupPodRuntime),
+		runner.WithSelinuxLabel(constants.SelinuxLabelPodRuntime),
 		runner.WithDroppedCapabilities(constants.DefaultDroppedCapabilities),
 	),
 		restart.WithType(restart.Forever),

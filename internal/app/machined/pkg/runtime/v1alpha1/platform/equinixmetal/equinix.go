@@ -14,10 +14,12 @@ import (
 	"log"
 	"net/http"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/maps"
 	"github.com/siderolabs/go-procfs/procfs"
 	"github.com/siderolabs/go-retry/retry"
 
@@ -155,20 +157,18 @@ func (p *EquinixMetal) ParseMetadata(ctx context.Context, equinixMetadata *Metad
 
 		found := false
 
-		hostInterfaceIter := hostInterfaces.Iterator()
-
-		for hostInterfaceIter.Next() {
+		for hostInterface := range hostInterfaces.All() {
 			// match using permanent MAC address:
 			// - bond interfaces don't have permanent addresses set, so we skip them this way
 			// - if the bond is already configured, regular hardware address is overwritten with bond address
-			if hostInterfaceIter.Value().TypedSpec().PermanentAddr.String() == iface.MAC {
+			if hostInterface.TypedSpec().PermanentAddr.String() == iface.MAC {
 				found = true
 
 				slaveIndex := bondSlaveIndexes[iface.Bond]
 
 				networkConfig.Links = append(networkConfig.Links,
 					network.LinkSpecSpec{
-						Name: hostInterfaceIter.Value().Metadata().ID(),
+						Name: hostInterface.Metadata().ID(),
 						Up:   true,
 						BondSlave: network.BondSlave{
 							MasterName: iface.Bond,
@@ -203,7 +203,10 @@ func (p *EquinixMetal) ParseMetadata(ctx context.Context, equinixMetadata *Metad
 		}
 	}
 
-	for bondName := range bondSlaveIndexes {
+	bondNames := maps.Keys(bondSlaveIndexes)
+	slices.Sort(bondNames)
+
+	for _, bondName := range bondNames {
 		bondLink := network.LinkSpecSpec{
 			ConfigLayer: network.ConfigPlatform,
 			Name:        bondName,
@@ -227,7 +230,7 @@ func (p *EquinixMetal) ParseMetadata(ctx context.Context, equinixMetadata *Metad
 
 	// 2. addresses
 
-	publicIPs := []string{}
+	var publicIPs []string
 
 	for _, addr := range equinixMetadata.Network.Addresses {
 		if !(addr.Enabled && addr.Management) {

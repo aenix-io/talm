@@ -15,9 +15,9 @@ import (
 	"github.com/containerd/cgroups/v3"
 	"github.com/containerd/cgroups/v3/cgroup1"
 	"github.com/containerd/cgroups/v3/cgroup2"
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/oci"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/google/uuid"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/suite"
@@ -37,7 +37,7 @@ const (
 	busyboxImageDigest = "sha256:4b6ad3a68d34da29bf7c8ccb5d355ba8b4babcad1f99798204e7abb43e54ee3d"
 )
 
-func MockEventSink(state events.ServiceState, message string, args ...interface{}) {
+func MockEventSink(state events.ServiceState, message string, args ...any) {
 }
 
 //nolint:maligned
@@ -163,7 +163,7 @@ func (suite *ContainerdSuite) run(runners ...runner.Runner) {
 		suite.containersWg.Add(1)
 
 		go func(r runner.Runner) {
-			runningSink := func(state events.ServiceState, message string, args ...interface{}) {
+			runningSink := func(state events.ServiceState, message string, args ...any) {
 				if state == events.StateRunning {
 					runningCh <- true
 				}

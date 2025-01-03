@@ -27,7 +27,7 @@ import (
 	v1alpha1cfg "github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 )
 
-func MockEventSink(state events.ServiceState, message string, args ...interface{}) {
+func MockEventSink(state events.ServiceState, message string, args ...any) {
 	log.Printf("state %s: %s", state, fmt.Sprintf(message, args...))
 }
 
@@ -137,6 +137,38 @@ func (suite *GoroutineSuite) TestStop() {
 
 	suite.Assert().NoError(r.Stop())
 	suite.Assert().NoError(<-errCh)
+}
+
+func (suite *GoroutineSuite) TestStuckOnStop() {
+	r := goroutine.NewRunner(suite.r, "teststop",
+		func(ctx context.Context, data runtime.Runtime, logger io.Writer) error {
+			// hanging forever
+			select {}
+		},
+		runner.WithLoggingManager(suite.loggingManager),
+		runner.WithGracefulShutdownTimeout(10*time.Millisecond),
+	)
+
+	suite.Assert().NoError(r.Open())
+
+	defer func() { suite.Assert().NoError(r.Close()) }()
+
+	errCh := make(chan error)
+
+	go func() {
+		errCh <- r.Run(MockEventSink)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	select {
+	case <-errCh:
+		suite.Require().Fail("should not return yet")
+	default:
+	}
+
+	suite.Assert().NoError(r.Stop())
+	suite.Assert().ErrorIs(<-errCh, goroutine.ErrAborted)
 }
 
 func (suite *GoroutineSuite) TestRunLogs() {

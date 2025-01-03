@@ -51,7 +51,7 @@ func (ctrl *SeccompProfileFileController) Outputs() []controller.Output {
 // Run implements controller.StatsController interface.
 //
 //nolint:gocyclo,cyclop
-func (ctrl *SeccompProfileFileController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *SeccompProfileFileController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	// initially, wait for /var to be mounted
 	if err := r.UpdateInputs([]controller.Input{
 		{
@@ -114,9 +114,7 @@ func (ctrl *SeccompProfileFileController) Run(ctx context.Context, r controller.
 
 		touchedIDs := make(map[string]struct{}, list.Len())
 
-		for iter := list.Iterator(); iter.Next(); {
-			profile := iter.Value()
-
+		for profile := range list.All() {
 			profileName := profile.TypedSpec().Name
 			profilePath := filepath.Join(ctrl.SeccompProfilesDirectory, profileName)
 

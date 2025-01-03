@@ -6,6 +6,7 @@ package v1alpha1
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/siderolabs/go-pointer"
 	"github.com/siderolabs/go-procfs/procfs"
@@ -65,19 +66,12 @@ func (p PhaseList) AppendList(list PhaseList) PhaseList {
 // Initialize is the initialize sequence. The primary goals of this sequence is
 // to load the config and enforce kernel security requirements.
 func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
+	mode := r.State().Platform().Mode()
 	phases := PhaseList{}
 
-	switch r.State().Platform().Mode() { //nolint:exhaustive
+	switch mode { //nolint:exhaustive
 	case runtime.ModeContainer:
 		phases = phases.Append(
-			"systemRequirements",
-			SetupSystemDirectory,
-		).Append(
-			"etc",
-			CreateSystemCgroups,
-			CreateOSReleaseFile,
-			SetUserEnvVars,
-		).Append(
 			"machined",
 			StartMachined,
 			StartContainerd,
@@ -89,23 +83,11 @@ func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
 		phases = phases.Append(
 			"systemRequirements",
 			EnforceKSPPRequirements,
-			SetupSystemDirectory,
-			MountBPFFS,
-			MountCgroups,
-			MountPseudoFilesystems,
-			SetRLimit,
-		).Append(
-			"integrity",
-			WriteIMAPolicy,
-		).Append(
-			"etc",
-			CreateSystemCgroups,
-			CreateOSReleaseFile,
-			SetUserEnvVars,
 		).Append(
 			"earlyServices",
 			StartUdevd,
 			StartMachined,
+			StartAuditd,
 			StartSyslogd,
 			StartContainerd,
 		).Append(
@@ -116,6 +98,10 @@ func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
 			ReloadMeta,
 		).AppendWithDeferredCheck(
 			func() bool {
+				if mode == runtime.ModeMetalAgent {
+					return false
+				}
+
 				disabledStr := procfs.ProcCmdline().Get(constants.KernelParamDashboardDisabled).First()
 				disabled, _ := strconv.ParseBool(pointer.SafeDeref(disabledStr)) //nolint:errcheck
 
@@ -133,10 +119,19 @@ func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
 			ResetSystemDiskPartitions,
 		).AppendWithDeferredCheck(
 			func() bool {
+				haltIfInstalledStr := procfs.ProcCmdline().Get(constants.KernelParamHaltIfInstalled).First()
+				haltIfInstalled, _ := strconv.ParseBool(pointer.SafeDeref(haltIfInstalledStr)) //nolint:errcheck
+
+				return r.State().Machine().Installed() && haltIfInstalled
+			},
+			"haltIfInstalled",
+			haltIfInstalled,
+		).AppendWithDeferredCheck(
+			func() bool {
 				return r.State().Machine().Installed()
 			},
 			"mountSystem",
-			MountStatePartition,
+			MountStatePartition(false),
 		).Append(
 			"config",
 			LoadConfig,
@@ -178,13 +173,17 @@ func (*Sequencer) Install(r runtime.Runtime) []runtime.Phase {
 				SaveStateEncryptionConfig,
 			).Append(
 				"mountState",
-				MountStatePartition,
+				MountStatePartition(true),
 			).Append(
 				"saveConfig",
 				SaveConfig,
+				Sleep(time.Second),
 			).Append(
 				"unmountState",
 				UnmountStatePartition,
+			).Append(
+				"volumeFinalize",
+				TeardownVolumeLifecycle,
 			).Append(
 				"stopEverything",
 				StopAllServices,
@@ -214,7 +213,7 @@ func (*Sequencer) Boot(r runtime.Runtime) []runtime.Phase {
 	).AppendWhen(
 		r.State().Platform().Mode() != runtime.ModeContainer,
 		"mountState",
-		MountStatePartition,
+		MountStatePartition(true),
 	).Append(
 		"saveConfig",
 		SaveConfig,
@@ -227,6 +226,7 @@ func (*Sequencer) Boot(r runtime.Runtime) []runtime.Phase {
 	).Append(
 		"env",
 		SetUserEnvVars,
+		WaitForCARoots,
 	).Append(
 		"dbus",
 		StartDBus,
@@ -256,10 +256,6 @@ func (*Sequencer) Boot(r runtime.Runtime) []runtime.Phase {
 	).Append(
 		"userSetup",
 		pauseOnFailure(WriteUserFiles, constants.FailurePauseTimeout),
-	).AppendWhen(
-		r.State().Platform().Mode() != runtime.ModeContainer,
-		"lvm",
-		ActivateLogicalVolumes,
 	).Append(
 		"extendPCRStartAll",
 		ExtendPCRStartAll,
@@ -412,10 +408,6 @@ func (*Sequencer) StageUpgrade(r runtime.Runtime, in *machineapi.UpgradeRequest)
 		).Append(
 			"dbus",
 			StopDBus,
-		).AppendWhen(
-			!in.GetPreserve() && (r.Config().Machine().Type() != machine.TypeWorker),
-			"leave",
-			LeaveEtcd,
 		).AppendList(
 			stopAllPhaselist(r, in.GetRebootMode() == machineapi.UpgradeRequest_DEFAULT),
 		).Append(
@@ -436,9 +428,6 @@ func (*Sequencer) MaintenanceUpgrade(r runtime.Runtime, in *machineapi.UpgradeRe
 		return nil
 	default:
 		phases = phases.Append(
-			"verifyDisk",
-			VerifyDiskAvailability,
-		).Append(
 			"upgrade",
 			Upgrade,
 		).Append(
@@ -472,21 +461,12 @@ func (*Sequencer) Upgrade(r runtime.Runtime, in *machineapi.UpgradeRequest) []ru
 			!r.Config().Machine().Kubelet().SkipNodeRegistration(),
 			"drain",
 			CordonAndDrainNode,
-		).AppendWhen(
-			!in.GetPreserve(),
-			"cleanup",
-			RemoveAllPods,
-		).AppendWhen(
-			in.GetPreserve(),
+		).Append(
 			"cleanup",
 			StopAllPods,
 		).Append(
 			"dbus",
 			StopDBus,
-		).AppendWhen(
-			!in.GetPreserve() && (r.Config().Machine().Type() != machine.TypeWorker),
-			"leave",
-			LeaveEtcd,
 		).Append(
 			"stopServices",
 			StopServicesEphemeral,
@@ -505,8 +485,8 @@ func (*Sequencer) Upgrade(r runtime.Runtime, in *machineapi.UpgradeRequest) []ru
 			UnmountEphemeralPartition,
 			UnmountStatePartition,
 		).Append(
-			"verifyDisk",
-			VerifyDiskAvailability,
+			"volumeFinalize",
+			TeardownVolumeLifecycle,
 		).Append(
 			"upgrade",
 			Upgrade,
@@ -556,6 +536,9 @@ func stopAllPhaselist(r runtime.Runtime, enableKexec bool) PhaseList {
 			"unmountSystem",
 			UnmountEphemeralPartition,
 			UnmountStatePartition,
+		).Append(
+			"volumeFinalize",
+			TeardownVolumeLifecycle,
 		).AppendWhen(
 			enableKexec,
 			"kexec",

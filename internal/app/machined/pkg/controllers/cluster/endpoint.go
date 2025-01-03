@@ -8,8 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"reflect"
-	"sort"
+	"slices"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/safe"
@@ -65,24 +64,24 @@ func (ctrl *EndpointController) Run(ctx context.Context, r controller.Runtime, l
 
 		var endpoints []netip.Addr
 
-		for it := memberList.Iterator(); it.Next(); {
-			member := it.Value().TypedSpec()
+		for member := range memberList.All() {
+			memberSpec := member.TypedSpec()
 
-			if !(member.MachineType == machine.TypeControlPlane || member.MachineType == machine.TypeInit) {
+			if !(memberSpec.MachineType == machine.TypeControlPlane || memberSpec.MachineType == machine.TypeInit) {
 				continue
 			}
 
-			endpoints = append(endpoints, member.Addresses...)
+			endpoints = append(endpoints, memberSpec.Addresses...)
 		}
 
-		sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].Compare(endpoints[j]) < 0 })
+		slices.SortFunc(endpoints, func(a, b netip.Addr) int { return a.Compare(b) })
 
 		if err := safe.WriterModify(
 			ctx,
 			r,
 			k8s.NewEndpoint(k8s.ControlPlaneNamespaceName, k8s.ControlPlaneDiscoveredEndpointsID),
 			func(r *k8s.Endpoint) error {
-				if !reflect.DeepEqual(r.TypedSpec().Addresses, endpoints) {
+				if !slices.Equal(r.TypedSpec().Addresses, endpoints) {
 					logger.Debug("updated controlplane endpoints", zap.Any("endpoints", endpoints))
 				}
 

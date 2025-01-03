@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	networkutils "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network/utils"
+	"github.com/siderolabs/talos/pkg/httpdefaults"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
@@ -138,8 +139,13 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			reconnect, err := ctrl.shouldReconnect(wgClient)
+			reconnect, err := peerDown(wgClient)
 			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					// no Wireguard device, so no need to reconnect
+					continue
+				}
+
 				return err
 			}
 
@@ -314,7 +320,7 @@ func (ctrl *ManagerController) provision(ctx context.Context, r controller.Runti
 	nodeUUID := sysInfo.TypedSpec().UUID
 
 	provision := func() (*pb.ProvisionResponse, error) {
-		conn, connErr := grpc.Dial(
+		conn, connErr := grpc.NewClient(
 			cfg.TypedSpec().Host,
 			withTransportCredentials(cfg.TypedSpec().Insecure),
 			grpc.WithSharedWriteBuffer(true),
@@ -427,9 +433,7 @@ func (ctrl *ManagerController) cleanupLinkSpecs(ctx context.Context, r controlle
 		return err
 	}
 
-	for iter := list.Iterator(); iter.Next(); {
-		link := iter.Value()
-
+	for link := range list.All() {
 		if link.Metadata().Owner() != ctrl.Name() {
 			continue
 		}
@@ -455,9 +459,7 @@ func (ctrl *ManagerController) cleanupAddressSpecs(ctx context.Context, r contro
 		return err
 	}
 
-	for iter := list.Iterator(); iter.Next(); {
-		address := iter.Value()
-
+	for address := range list.All() {
 		if address.Metadata().Owner() != ctrl.Name() {
 			continue
 		}
@@ -476,34 +478,15 @@ func (ctrl *ManagerController) cleanupAddressSpecs(ctx context.Context, r contro
 	return nil
 }
 
-func (ctrl *ManagerController) shouldReconnect(wgClient *wgctrl.Client) (bool, error) {
-	wgDevice, err := wgClient.Device(constants.SideroLinkName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// no Wireguard device, so no need to reconnect
-			return false, nil
-		}
-
-		return false, fmt.Errorf("error reading Wireguard device: %w", err)
-	}
-
-	if len(wgDevice.Peers) != 1 {
-		return false, fmt.Errorf("unexpected number of Wireguard peers: %d", len(wgDevice.Peers))
-	}
-
-	peer := wgDevice.Peers[0]
-	since := time.Since(peer.LastHandshakeTime)
-
-	return since >= wireguard.PeerDownInterval, nil
-}
-
 func withTransportCredentials(insec bool) grpc.DialOption {
 	var transportCredentials credentials.TransportCredentials
 
 	if insec {
 		transportCredentials = insecure.NewCredentials()
 	} else {
-		transportCredentials = credentials.NewTLS(&tls.Config{})
+		transportCredentials = credentials.NewTLS(&tls.Config{
+			RootCAs: httpdefaults.RootCAs(),
+		})
 	}
 
 	return grpc.WithTransportCredentials(transportCredentials)

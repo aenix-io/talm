@@ -7,6 +7,7 @@ package hcloud
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/netip"
@@ -52,7 +53,7 @@ func (h *Hcloud) ParseMetadata(unmarshalledNetworkConfig *NetworkConfig, metadat
 		networkConfig.Hostnames = append(networkConfig.Hostnames, hostnameSpec)
 	}
 
-	publicIPs := []string{}
+	var publicIPs []string
 
 	if metadata.PublicIPv4 != "" {
 		publicIPs = append(publicIPs, metadata.PublicIPv4)
@@ -156,9 +157,27 @@ func (h *Hcloud) Configuration(ctx context.Context, r state.State) ([]byte, erro
 
 	log.Printf("fetching machine config from: %q", HCloudUserDataEndpoint)
 
-	return download.Download(ctx, HCloudUserDataEndpoint,
+	configBytes, err := download.Download(ctx, HCloudUserDataEndpoint,
 		download.WithErrorOnNotFound(errors.ErrNoConfigSource),
 		download.WithErrorOnEmptyResponse(errors.ErrNoConfigSource))
+	if err != nil {
+		return nil, err
+	}
+
+	// Try to parse the downloaded config bytes as base64 string, so that users can provide the config in base64 format.
+	// This also allows users to gzip this data, since the calling code will try to un-gzip the data if it detects it.
+	return maybeBase64Decode(configBytes), nil
+}
+
+// maybeBase64Decode tries to interpret the provided bytes as base64 string and decode them.
+// If the provided bytes are not a valid base64 string, the original bytes are returned.
+func maybeBase64Decode(data []byte) []byte {
+	out, err := base64.StdEncoding.AppendDecode(nil, data)
+	if err != nil {
+		return data
+	}
+
+	return out
 }
 
 // Mode implements the runtime.Platform interface.

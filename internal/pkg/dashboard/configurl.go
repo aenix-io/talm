@@ -15,8 +15,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/aenix-io/talm/internal/pkg/dashboard/resourcedata"
-	"github.com/aenix-io/talm/internal/pkg/meta"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/meta"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 )
 
@@ -67,7 +67,7 @@ func NewConfigURLGrid(ctx context.Context, dashboard *Dashboard) *ConfigURLGrid 
 	grid.form.AddFormItem(grid.existingCode)
 	grid.form.AddFormItem(grid.newCodeField)
 	grid.form.AddButton("Save", func() {
-		ctx = nodeContext(ctx, grid.selectedNode)
+		ctx = nodeContext(ctx, grid.selectedNode) //nolint:fatcontext
 
 		value := grid.newCodeField.GetText()
 
@@ -88,7 +88,7 @@ func NewConfigURLGrid(ctx context.Context, dashboard *Dashboard) *ConfigURLGrid 
 		grid.dashboard.selectScreen(ScreenSummary)
 	})
 	grid.form.AddButton("Delete", func() {
-		ctx = nodeContext(ctx, grid.selectedNode)
+		ctx = nodeContext(ctx, grid.selectedNode) //nolint:fatcontext
 
 		err := dashboard.cli.MetaDelete(ctx, meta.DownloadURLCode)
 		if err != nil {

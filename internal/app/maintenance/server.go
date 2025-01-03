@@ -10,20 +10,20 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"slices"
 	"strings"
 
 	cosiv1alpha1 "github.com/cosi-project/runtime/api/v1alpha1"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/protobuf/server"
 	"github.com/google/uuid"
-	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/v2/block"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
-	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/disk"
 	"github.com/aenix-io/talm/internal/app/resources"
 	storaged "github.com/aenix-io/talm/internal/app/storaged"
 	"github.com/aenix-io/talm/internal/pkg/configuration"
@@ -33,7 +33,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	v1alpha1machine "github.com/siderolabs/talos/pkg/machinery/config/machine"
-	"github.com/siderolabs/talos/pkg/machinery/constants"
+	blockres "github.com/siderolabs/talos/pkg/machinery/resources/block"
 	"github.com/siderolabs/talos/pkg/machinery/role"
 	"github.com/siderolabs/talos/pkg/machinery/version"
 )
@@ -45,10 +45,12 @@ type Server struct {
 	controller runtime.Controller
 	cfgCh      chan<- config.Provider
 	server     *grpc.Server
+
+	mode runtime.Mode
 }
 
 // New initializes and returns a [Server].
-func New(cfgCh chan<- config.Provider) *Server {
+func New(cfgCh chan<- config.Provider, mode runtime.Mode) *Server {
 	if runtimeController == nil {
 		panic("runtime controller is not set")
 	}
@@ -56,6 +58,7 @@ func New(cfgCh chan<- config.Provider) *Server {
 	return &Server{
 		controller: runtimeController,
 		cfgCh:      cfgCh,
+		mode:       mode,
 	}
 }
 
@@ -67,13 +70,22 @@ func (s *Server) Register(obj *grpc.Server) {
 	resourceState := s.controller.Runtime().State().V1Alpha2().Resources()
 	resourceState = state.WrapCore(state.Filter(resourceState, resources.AccessPolicy(resourceState)))
 
-	storage.RegisterStorageServiceServer(obj, &storaged.Server{Controller: s.controller})
+	storage.RegisterStorageServiceServer(obj,
+		&storaged.Server{
+			Controller:      s.controller,
+			MaintenanceMode: true,
+		},
+	)
 	machine.RegisterMachineServiceServer(obj, s)
 	cosiv1alpha1.RegisterStateServer(obj, server.NewState(resourceState))
 }
 
 // ApplyConfiguration implements [machine.MachineServiceServer].
-func (s *Server) ApplyConfiguration(_ context.Context, in *machine.ApplyConfigurationRequest) (*machine.ApplyConfigurationResponse, error) {
+func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfigurationRequest) (*machine.ApplyConfigurationResponse, error) {
+	if s.mode.IsAgent() {
+		return nil, status.Error(codes.Unimplemented, "API is not implemented in agent mode")
+	}
+
 	//nolint:exhaustive
 	switch in.Mode {
 	case machine.ApplyConfigurationRequest_TRY:
@@ -96,10 +108,15 @@ func (s *Server) ApplyConfiguration(_ context.Context, in *machine.ApplyConfigur
 		return nil, status.Errorf(codes.InvalidArgument, "configuration validation failed: %s", err)
 	}
 
+	warningsRuntime, err := cfgProvider.RuntimeValidate(ctx, s.controller.Runtime().State().V1Alpha2().Resources(), s.controller.Runtime().State().Platform().Mode())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "runtime configuration validation failed: %s", err)
+	}
+
 	reply := &machine.ApplyConfigurationResponse{
 		Messages: []*machine.ApplyConfiguration{
 			{
-				Warnings: warnings,
+				Warnings: slices.Concat(warnings, warningsRuntime),
 			},
 		},
 	}
@@ -118,6 +135,10 @@ Node is running in maintenance mode and does not have a config yet.`
 
 // GenerateConfiguration implements the [machine.MachineServiceServer] interface.
 func (s *Server) GenerateConfiguration(ctx context.Context, in *machine.GenerateConfigurationRequest) (*machine.GenerateConfigurationResponse, error) {
+	if s.mode.IsAgent() {
+		return nil, status.Error(codes.Unimplemented, "API is not implemented in agent mode")
+	}
+
 	if in.MachineConfig == nil {
 		return nil, errors.New("invalid generate request")
 	}
@@ -163,11 +184,15 @@ func (s *Server) Version(ctx context.Context, _ *emptypb.Empty) (*machine.Versio
 
 // Upgrade initiates an upgrade.
 func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply *machine.UpgradeResponse, err error) {
+	if s.mode.IsAgent() {
+		return nil, status.Error(codes.Unimplemented, "API is not implemented in agent mode")
+	}
+
 	if err = s.assertAdminRole(ctx); err != nil {
 		return nil, err
 	}
 
-	if s.controller.Runtime().State().Machine().Disk() == nil {
+	if !s.controller.Runtime().State().Machine().Installed() {
 		return nil, status.Errorf(codes.FailedPrecondition, "Talos is not installed")
 	}
 
@@ -211,8 +236,12 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 // Reset resets the node.
 //
 //nolint:gocyclo
-func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *machine.ResetResponse, err error) {
-	if err = s.assertAdminRole(ctx); err != nil {
+func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (*machine.ResetResponse, error) {
+	if s.mode.IsAgent() {
+		return nil, status.Error(codes.Unimplemented, "API is not implemented in agent mode")
+	}
+
+	if err := s.assertAdminRole(ctx); err != nil {
 		return nil, err
 	}
 
@@ -228,22 +257,23 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 		return nil, errors.New("system partitions to wipe params is not supported in the maintenance mode")
 	}
 
-	var dev *blockdevice.BlockDevice
+	systemDisk, err := blockres.GetSystemDisk(ctx, s.controller.Runtime().State().V1Alpha2().Resources())
+	if err != nil {
+		return nil, err
+	}
 
-	disk := s.controller.Runtime().State().Machine().Disk(disk.WithPartitionLabel(constants.BootPartitionLabel))
-
-	if disk == nil {
+	if systemDisk == nil {
 		return nil, errors.New("reset failed: Talos is not installed")
 	}
 
-	dev, err = blockdevice.Open(disk.Device().Name())
+	dev, err := block.NewFromPath(systemDisk.DevPath, block.OpenForWrite())
 	if err != nil {
 		return nil, err
 	}
 
 	defer dev.Close() //nolint:errcheck
 
-	if err = dev.Reset(); err != nil {
+	if err = dev.FastWipe(); err != nil {
 		return nil, err
 	}
 
@@ -251,9 +281,7 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 
 	if in.Mode != machine.ResetRequest_SYSTEM_DISK {
 		for _, deviceName := range in.UserDisksToWipe {
-			var dev *blockdevice.BlockDevice
-
-			dev, err = blockdevice.Open(deviceName)
+			dev, err = block.NewFromPath(deviceName, block.OpenForWrite())
 			if err != nil {
 				return nil, err
 			}
@@ -282,15 +310,13 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 		}
 	}()
 
-	reply = &machine.ResetResponse{
+	return &machine.ResetResponse{
 		Messages: []*machine.Reset{
 			{
 				ActorId: actorID,
 			},
 		},
-	}
-
-	return reply, nil
+	}, nil
 }
 
 // MetaWrite implements the [machine.MachineServiceServer] interface.

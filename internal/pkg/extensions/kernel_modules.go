@@ -6,6 +6,7 @@
 package extensions
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/u-root/u-root/pkg/cpio"
 	"github.com/ulikunitz/xz"
 
@@ -33,7 +35,24 @@ func (ext *Extension) ProvidesKernelModules() bool {
 
 // KernelModuleDirectory returns the path to the kernel modules directory.
 func (ext *Extension) KernelModuleDirectory() string {
-	return filepath.Join(ext.rootfsPath, constants.KernelModulesPath)
+	return filepath.Join(ext.RootfsPath(), constants.KernelModulesPath)
+}
+
+func autoDecompress(r io.Reader) (io.Reader, error) {
+	var magic [4]byte
+
+	if _, err := r.Read(magic[:]); err != nil {
+		return nil, err
+	}
+
+	src := io.MultiReader(bytes.NewReader(magic[:]), r)
+
+	// xz magic
+	if bytes.Equal(magic[:], []byte{0xfd, '7', 'z', 'X'}) {
+		return xz.NewReader(src)
+	}
+
+	return zstd.NewReader(src)
 }
 
 // GenerateKernelModuleDependencyTreeExtension generates a kernel module dependency tree extension.
@@ -60,7 +79,7 @@ func GenerateKernelModuleDependencyTreeExtension(extensionPathsWithKernelModules
 		return initramfsxz.Close()
 	})
 
-	r, err := xz.NewReader(initramfsxz)
+	r, err := autoDecompress(initramfsxz)
 	if err != nil {
 		return nil, err
 	}
@@ -123,18 +142,20 @@ func GenerateKernelModuleDependencyTreeExtension(extensionPathsWithKernelModules
 		return nil, err
 	}
 
-	kernelModulesDepTreeExtension := newExtension(kernelModulesDependencyTreeStagingDir, "modules.dep")
-	kernelModulesDepTreeExtension.Manifest = extensions.Manifest{
-		Version: kernelVersionPath,
-		Metadata: extensions.Metadata{
-			Name:        "modules.dep",
-			Version:     kernelVersionPath,
-			Author:      "Talos Machinery",
-			Description: "Combined modules.dep for all extensions",
+	kernelModulesDepTreeExtension := extensions.New(
+		kernelModulesDependencyTreeStagingDir, "modules.dep",
+		extensions.Manifest{
+			Version: kernelVersionPath,
+			Metadata: extensions.Metadata{
+				Name:        "modules.dep",
+				Version:     kernelVersionPath,
+				Author:      "Talos Machinery",
+				Description: "Combined modules.dep for all extensions",
+			},
 		},
-	}
+	)
 
-	return kernelModulesDepTreeExtension, nil
+	return &Extension{kernelModulesDepTreeExtension}, nil
 }
 
 func logErr(msg string, f func() error) {
@@ -173,7 +194,7 @@ func extractRootfsFromInitramfs(r io.Reader, rootfsFilePath string) error {
 }
 
 func unsquash(squashfsPath, dest, path string) error {
-	cmd := exec.Command("unsquashfs", "-d", dest, "-f", "-n", squashfsPath, path)
+	cmd := exec.Command("unsquashfs", "-no-xattrs", "-d", dest, "-f", "-n", squashfsPath, path)
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()

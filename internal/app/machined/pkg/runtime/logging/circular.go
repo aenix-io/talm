@@ -15,7 +15,9 @@ import (
 	"sync"
 	"time"
 
+	corezstd "github.com/klauspost/compress/zstd"
 	"github.com/siderolabs/go-circular"
+	"github.com/siderolabs/go-circular/zstd"
 	"github.com/siderolabs/go-debug"
 	"github.com/siderolabs/go-tail"
 
@@ -24,19 +26,25 @@ import (
 
 // These constants should some day move to config.
 const (
+	// Overall capacity of the log buffer (in raw bytes, memory size will be smaller due to compression).
+	DesiredCapacity = 1048576
 	// Some logs are tiny, no need to reserve too much memory.
 	InitialCapacity = 16384
-	// Cap each log at 1M.
-	MaxCapacity = 1048576
-	// Safety gap to avoid buffer overruns.
-	SafetyGap = 2048
+	// Chunk capacity is the length of each chunk, it should be
+	// big enough for the compression to be efficient.
+	ChunkCapacity = 65536
+	// Number of zstd-compressed chunks to keep.
+	NumCompressedChunks = (DesiredCapacity / ChunkCapacity) - 1
+	// Safety gap to avoid buffer overruns, can be lowered as with compression we don't need much.
+	SafetyGap = 1
 )
 
 // CircularBufferLoggingManager implements logging to circular fixed size buffer.
 type CircularBufferLoggingManager struct {
 	fallbackLogger *log.Logger
 
-	buffers sync.Map
+	buffers    sync.Map
+	compressor circular.Compressor
 
 	sendersRW      sync.RWMutex
 	senders        []runtime.LogSender
@@ -45,9 +53,19 @@ type CircularBufferLoggingManager struct {
 
 // NewCircularBufferLoggingManager initializes new CircularBufferLoggingManager.
 func NewCircularBufferLoggingManager(fallbackLogger *log.Logger) *CircularBufferLoggingManager {
+	compressor, err := zstd.NewCompressor(
+		corezstd.WithEncoderConcurrency(1),
+		corezstd.WithWindowSize(2*corezstd.MinWindowSize),
+	)
+	if err != nil {
+		// should not happen
+		panic(fmt.Sprintf("failed to create zstd compressor: %s", err))
+	}
+
 	return &CircularBufferLoggingManager{
 		fallbackLogger: fallbackLogger,
 		sendersChanged: make(chan struct{}),
+		compressor:     compressor,
 	}
 }
 
@@ -56,7 +74,7 @@ func (manager *CircularBufferLoggingManager) ServiceLog(id string) runtime.LogHa
 	return &circularHandler{
 		manager: manager,
 		id:      id,
-		fields: map[string]interface{}{
+		fields: map[string]any{
 			// use field name that is not used by anything else
 			"talos-service": id,
 		},
@@ -106,7 +124,8 @@ func (manager *CircularBufferLoggingManager) getBuffer(id string, create bool) (
 
 		b, err := circular.NewBuffer(
 			circular.WithInitialCapacity(InitialCapacity),
-			circular.WithMaxCapacity(MaxCapacity),
+			circular.WithMaxCapacity(ChunkCapacity),
+			circular.WithNumCompressedChunks(NumCompressedChunks, manager.compressor),
 			circular.WithSafetyGap(SafetyGap))
 		if err != nil {
 			return nil, err // only configuration issue might raise error
@@ -134,7 +153,7 @@ func (manager *CircularBufferLoggingManager) RegisteredLogs() []string {
 type circularHandler struct {
 	manager *CircularBufferLoggingManager
 	id      string
-	fields  map[string]interface{}
+	fields  map[string]any
 
 	buf *circular.Buffer
 }
@@ -158,6 +177,12 @@ func (handler *circularHandler) Writer() (io.WriteCloser, error) {
 		}
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					handler.manager.fallbackLogger.Printf("log sender panic: %v", r)
+				}
+			}()
+
 			if err := handler.runSenders(); err != nil {
 				handler.manager.fallbackLogger.Printf("log senders stopped: %s", err)
 			}
@@ -295,26 +320,29 @@ func (handler *circularHandler) resend(e *runtime.LogEvent) {
 
 // timeStampWriter is a writer that adds a timestamp to each line.
 type timeStampWriter struct {
-	w io.Writer
+	w io.WriteCloser
 }
 
 // Write implements the io.Writer interface.
 func (t *timeStampWriter) Write(p []byte) (int, error) {
+	buf := make([]byte, 0, len(p)+27)
+
 	// Current log.Logger implementation always adds a newline to the message, so we don't need to wait for it.
-	var buf bytes.Buffer
+	buf = time.Now().AppendFormat(buf, "2006/01/02 15:04:05.000000")
+	buf = append(buf, ' ')
+	buf = append(buf, p...)
 
-	buf.WriteString(time.Now().Format("2006/01/02 15:04:05.000000"))
-	buf.WriteByte(' ')
-	buf.Write(p)
+	n, err := t.w.Write(buf)
 
-	return t.w.Write(buf.Bytes())
+	switch {
+	case err == nil && n == len(buf):
+		return len(p), nil // success, return original length
+	case err == nil && n != len(buf):
+		return n, fmt.Errorf("time stamp writer error: %w", io.ErrShortWrite)
+	default:
+		return n, fmt.Errorf("time stamp writer internal error: %w", err)
+	}
 }
 
 // Close implements the io.Closer interface.
-func (t *timeStampWriter) Close() error {
-	if c, ok := t.w.(io.Closer); ok {
-		return c.Close()
-	}
-
-	return nil
-}
+func (t *timeStampWriter) Close() error { return t.w.Close() }

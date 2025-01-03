@@ -9,6 +9,7 @@ import (
 	"log"
 
 	"github.com/cosi-project/runtime/pkg/controller"
+	"go.uber.org/zap"
 )
 
 // TaskSetupFunc defines the function that a task will execute for a specific runtime
@@ -53,7 +54,7 @@ func DefaultControllerOptions() LockOptions {
 type Controller interface {
 	Runtime() Runtime
 	Sequencer() Sequencer
-	Run(context.Context, Sequence, interface{}, ...LockOption) error
+	Run(context.Context, Sequence, any, ...LockOption) error
 	V1Alpha2() V1Alpha2Controller
 }
 
@@ -61,4 +62,5 @@ type Controller interface {
 type V1Alpha2Controller interface {
 	Run(context.Context, *Drainer) error
 	DependencyGraph() (*controller.DependencyGraph, error)
+	MakeLogger(serviceName string) (*zap.Logger, error)
 }

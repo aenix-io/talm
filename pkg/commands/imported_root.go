@@ -14,7 +14,6 @@ import (
 	"google.golang.org/grpc/peer"
 
 	"github.com/siderolabs/gen/maps"
-	_ "github.com/siderolabs/talos/pkg/grpc/codec" // register codec
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"

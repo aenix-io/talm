@@ -12,12 +12,16 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/helpers"
+	"github.com/aenix-io/talm/internal/pkg/dashboard/resolver"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 )
 
 // Source is a data source that gathers information about a Talos node using Talos API.
 type Source struct {
 	*client.Client
+
+	Resolver resolver.Resolver
 
 	Interval time.Duration
 
@@ -101,7 +105,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -122,7 +126,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -143,7 +147,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -164,13 +168,34 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
 				}
 
 				result.Nodes[node].SystemStat = msg
+			}
+
+			return nil
+		},
+		func() error {
+			resp, err := source.MachineClient.CPUFreqStats(source.ctx, &emptypb.Empty{})
+			if err != nil {
+				return err
+			}
+
+			resultLock.Lock()
+			defer resultLock.Unlock()
+
+			for _, msg := range resp.GetMessages() {
+				node := source.node(msg)
+
+				if _, ok := result.Nodes[node]; !ok {
+					result.Nodes[node] = &Node{}
+				}
+
+				result.Nodes[node].CPUsFreqStats = msg
 			}
 
 			return nil
@@ -185,7 +210,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -206,7 +231,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -227,7 +252,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -248,7 +273,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -269,7 +294,7 @@ func (source *Source) gather() *Data {
 			defer resultLock.Unlock()
 
 			for _, msg := range resp.GetMessages() {
-				node := msg.GetMetadata().GetHostname()
+				node := source.node(msg)
 
 				if _, ok := result.Nodes[node]; !ok {
 					result.Nodes[node] = &Node{}
@@ -294,4 +319,10 @@ func (source *Source) gather() *Data {
 	}
 
 	return result
+}
+
+func (source *Source) node(msg helpers.Message) string {
+	hostname := msg.GetMetadata().GetHostname()
+
+	return source.Resolver.Resolve(hostname)
 }

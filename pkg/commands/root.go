@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/siderolabs/talos/cmd/talosctl/pkg/talos/global"
-	_ "github.com/siderolabs/talos/pkg/grpc/codec" // register codec
 	"github.com/siderolabs/talos/pkg/machinery/client"
 )
 

@@ -6,8 +6,6 @@ package time_test
 
 import (
 	"context"
-	"log"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -22,16 +20,17 @@ import (
 	"github.com/siderolabs/go-retry/retry"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/aenix-io/talm/internal/app/machined/pkg/controllers/ctest"
 	timectrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/time"
 	v1alpha1runtime "github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/config/container"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/config"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	timeresource "github.com/siderolabs/talos/pkg/machinery/resources/time"
 	v1alpha1resource "github.com/siderolabs/talos/pkg/machinery/resources/v1alpha1"
 )
@@ -62,10 +61,13 @@ func (suite *SyncSuite) SetupTest() {
 
 	var err error
 
-	logger := logging.Wrap(log.Writer())
-
-	suite.runtime, err = runtime.NewRuntime(suite.state, logger)
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
+
+	// create fake device ready status
+	deviceStatus := runtimeres.NewDevicesStatus(runtimeres.NamespaceName, runtimeres.DevicesID)
+	deviceStatus.TypedSpec().Ready = true
+	suite.Require().NoError(suite.state.Create(suite.ctx, deviceStatus))
 }
 
 func (suite *SyncSuite) startRuntime() {
@@ -96,7 +98,7 @@ func (suite *SyncSuite) assertTimeStatus(spec timeresource.StatusSpec) error {
 		return err
 	}
 
-	status := r.(*timeresource.Status) //nolint:errcheck,forcetypeassert
+	status := r.(*timeresource.Status) //nolint:forcetypeassert
 
 	if *status.TypedSpec() != spec {
 		return retry.ExpectedErrorf("time status doesn't match: %v != %v", *status.TypedSpec(), spec)
@@ -339,7 +341,7 @@ func (suite *SyncSuite) TestReconcileSyncChangeConfig() {
 	suite.Assert().NoError(
 		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
 			func() error {
-				if !reflect.DeepEqual(mockSyncer.getTimeServers(), []string{"127.0.0.1"}) {
+				if !slices.Equal(mockSyncer.getTimeServers(), []string{"127.0.0.1"}) {
 					return retry.ExpectedErrorf("time servers not updated yet")
 				}
 

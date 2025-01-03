@@ -10,6 +10,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"go.uber.org/zap"
 
@@ -77,7 +78,7 @@ func (ctrl *TimeServerSpecController) Run(ctx context.Context, r controller.Runt
 
 		// loop over specs and sync to statuses
 		for _, res := range list.Items {
-			spec := res.(*network.TimeServerSpec) //nolint:forcetypeassert,errcheck
+			spec := res.(*network.TimeServerSpec) //nolint:forcetypeassert
 
 			switch spec.Metadata().Phase() {
 			case resource.PhaseTearingDown:
@@ -97,9 +98,7 @@ func (ctrl *TimeServerSpecController) Run(ctx context.Context, r controller.Runt
 
 				logger.Info("setting time servers", zap.Strings("addresses", ntps))
 
-				if err = r.Modify(ctx, network.NewTimeServerStatus(network.NamespaceName, spec.Metadata().ID()), func(r resource.Resource) error {
-					status := r.(*network.TimeServerStatus) //nolint:forcetypeassert,errcheck
-
+				if err = safe.WriterModify(ctx, r, network.NewTimeServerStatus(network.NamespaceName, spec.Metadata().ID()), func(status *network.TimeServerStatus) error {
 					status.TypedSpec().NTPServers = spec.TypedSpec().NTPServers
 
 					return nil

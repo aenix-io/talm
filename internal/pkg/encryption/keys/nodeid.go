@@ -8,8 +8,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/siderolabs/go-blockdevice/blockdevice/encryption"
-	"github.com/siderolabs/go-blockdevice/blockdevice/encryption/token"
+	"github.com/siderolabs/go-blockdevice/v2/encryption"
+	"github.com/siderolabs/go-blockdevice/v2/encryption/token"
 
 	"github.com/aenix-io/talm/internal/pkg/encryption/helpers"
 )

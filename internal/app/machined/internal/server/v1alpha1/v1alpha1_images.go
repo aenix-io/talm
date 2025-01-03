@@ -7,11 +7,10 @@ package runtime
 import (
 	"context"
 
-	containerdapi "github.com/containerd/containerd"
-	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/namespaces"
-	criconstants "github.com/containerd/containerd/pkg/cri/constants"
-	"github.com/containerd/containerd/platforms"
+	containerdapi "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/errdefs"
+	"github.com/containerd/platforms"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -20,6 +19,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/resources/cri"
 )
 
 func containerdNamespaceHelper(ctx context.Context, ns common.ContainerdNamespace) (context.Context, error) {
@@ -27,7 +27,7 @@ func containerdNamespaceHelper(ctx context.Context, ns common.ContainerdNamespac
 
 	switch ns {
 	case common.ContainerdNamespace_NS_CRI:
-		namespaceName = criconstants.K8sContainerdNamespace
+		namespaceName = constants.K8sContainerdNamespace
 	case common.ContainerdNamespace_NS_SYSTEM:
 		namespaceName = constants.SystemContainerdNamespace
 	case common.ContainerdNamespace_NS_UNKNOWN:
@@ -92,7 +92,7 @@ func (s *Server) ImagePull(ctx context.Context, req *machine.ImagePullRequest) (
 		return nil, err
 	}
 
-	_, err = image.Pull(ctx, s.Controller.Runtime().Config().Machine().Registries(), client, req.Reference, image.WithSkipIfAlreadyPulled())
+	_, err = image.Pull(ctx, cri.RegistryBuilder(s.Controller.Runtime().State().V1Alpha2().Resources()), client, req.Reference, image.WithSkipIfAlreadyPulled())
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil, status.Errorf(codes.NotFound, "error pulling image: %s", err)

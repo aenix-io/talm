@@ -7,7 +7,7 @@ package network_test
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -20,9 +20,9 @@ import (
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/zap/zaptest"
 
 	netctrl "github.com/aenix-io/talm/internal/app/machined/pkg/controllers/network"
-	"github.com/siderolabs/talos/pkg/logging"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 )
@@ -46,7 +46,7 @@ func (suite *ResolverMergeSuite) SetupTest() {
 
 	var err error
 
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
+	suite.runtime, err = runtime.NewRuntime(suite.state, zaptest.NewLogger(suite.T()))
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.runtime.RegisterController(&netctrl.ResolverMergeController{}))
@@ -92,8 +92,9 @@ func (suite *ResolverMergeSuite) TestMerge() {
 
 	static := network.NewResolverSpec(network.ConfigNamespaceName, "configuration/resolvers")
 	*static.TypedSpec() = network.ResolverSpecSpec{
-		DNSServers:  []netip.Addr{netip.MustParseAddr("2.2.2.2")},
-		ConfigLayer: network.ConfigMachineConfiguration,
+		DNSServers:    []netip.Addr{netip.MustParseAddr("2.2.2.2")},
+		SearchDomains: []string{"example.com", "example.org", "example.net"},
+		ConfigLayer:   network.ConfigMachineConfiguration,
 	}
 
 	for _, res := range []resource.Resource{def, dhcp1, dhcp2, static} {
@@ -105,6 +106,7 @@ func (suite *ResolverMergeSuite) TestMerge() {
 			"resolvers",
 		}, func(r *network.ResolverSpec, asrt *assert.Assertions) {
 			asrt.Equal(*static.TypedSpec(), *r.TypedSpec())
+			asrt.Equal([]string{"example.com", "example.org", "example.net"}, r.TypedSpec().SearchDomains)
 		},
 	)
 
@@ -114,7 +116,43 @@ func (suite *ResolverMergeSuite) TestMerge() {
 		[]string{
 			"resolvers",
 		}, func(r *network.ResolverSpec, asrt *assert.Assertions) {
-			asrt.Equal(r.TypedSpec().DNSServers, []netip.Addr{netip.MustParseAddr("1.1.2.0"), netip.MustParseAddr("1.1.2.1")})
+			asrt.Equal([]netip.Addr{netip.MustParseAddr("1.1.2.0"), netip.MustParseAddr("1.1.2.1")}, r.TypedSpec().DNSServers)
+		},
+	)
+}
+
+func (suite *ResolverMergeSuite) TestMergeIPv46() {
+	def := network.NewResolverSpec(network.ConfigNamespaceName, "default/resolvers")
+	*def.TypedSpec() = network.ResolverSpecSpec{
+		DNSServers: []netip.Addr{
+			netip.MustParseAddr(constants.DefaultPrimaryResolver),
+			netip.MustParseAddr(constants.DefaultSecondaryResolver),
+		},
+		ConfigLayer: network.ConfigDefault,
+	}
+
+	platform := network.NewResolverSpec(network.ConfigNamespaceName, "platform/resolvers")
+	*platform.TypedSpec() = network.ResolverSpecSpec{
+		DNSServers:  []netip.Addr{netip.MustParseAddr("1.1.2.0"), netip.MustParseAddr("fe80::1")},
+		ConfigLayer: network.ConfigPlatform,
+	}
+
+	dhcp := network.NewResolverSpec(network.ConfigNamespaceName, "dhcp/eth1")
+	*dhcp.TypedSpec() = network.ResolverSpecSpec{
+		DNSServers:  []netip.Addr{netip.MustParseAddr("1.1.2.1")},
+		ConfigLayer: network.ConfigOperator,
+	}
+
+	for _, res := range []resource.Resource{def, platform, dhcp} {
+		suite.Require().NoError(suite.state.Create(suite.ctx, res), "%v", res.Spec())
+	}
+
+	suite.assertResolvers(
+		[]string{
+			"resolvers",
+		}, func(r *network.ResolverSpec, asrt *assert.Assertions) {
+			asrt.Equal(network.ConfigOperator, r.TypedSpec().ConfigLayer)
+			asrt.Equal(`["1.1.2.1" "fe80::1"]`, fmt.Sprintf("%q", r.TypedSpec().DNSServers))
 		},
 	)
 }

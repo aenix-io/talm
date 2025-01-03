@@ -5,10 +5,13 @@
 package extensions
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+
+	"github.com/siderolabs/talos/pkg/machinery/extensions"
 )
 
 // List prepared unpacked extensions under rootPath.
@@ -26,7 +29,7 @@ func List(rootPath string) ([]*Extension, error) {
 		return nil, nil
 	}
 
-	sort.Slice(items, func(i, j int) bool { return items[i].Name() < items[j].Name() })
+	slices.SortFunc(items, func(a, b os.DirEntry) int { return cmp.Compare(a.Name(), b.Name()) })
 
 	result := make([]*Extension, 0, len(items))
 
@@ -35,12 +38,12 @@ func List(rootPath string) ([]*Extension, error) {
 			return nil, fmt.Errorf("unexpected non-directory entry: %q", item.Name())
 		}
 
-		ext, err := Load(filepath.Join(rootPath, item.Name()))
+		ext, err := extensions.Load(filepath.Join(rootPath, item.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("error loading extension %s: %w", item.Name(), err)
 		}
 
-		result = append(result, ext)
+		result = append(result, &Extension{ext})
 	}
 
 	return result, nil

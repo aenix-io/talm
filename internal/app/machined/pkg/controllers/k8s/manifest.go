@@ -64,7 +64,7 @@ func (ctrl *ManifestController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo
-func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -112,7 +112,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 				func(r *k8s.Manifest) error {
 					return k8sadapter.Manifest(r).SetYAML(renderedManifest.data)
 				}); err != nil {
-				return fmt.Errorf("error updating manifests: %w", err)
+				return fmt.Errorf("error updating manifest %q: %w", renderedManifest.name, err)
 			}
 		}
 
@@ -122,7 +122,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 			return fmt.Errorf("error listing manifests: %w", err)
 		}
 
-		manifestsToDelete := map[string]struct{}{}
+		manifestsToDelete := make(map[string]struct{}, len(manifests.Items))
 
 		for _, manifest := range manifests.Items {
 			if manifest.Metadata().Owner() != ctrl.Name() {
@@ -169,8 +169,6 @@ func (ctrl *ManifestController) render(cfg k8s.BootstrapManifestsConfigSpec, scr
 		ApidPort int
 
 		TalosServiceAccount TalosServiceAccount
-
-		HostDNSAddr string
 	}{
 		BootstrapManifestsConfigSpec: cfg,
 		Secrets:                      scrt,
@@ -192,7 +190,7 @@ func (ctrl *ManifestController) render(cfg k8s.BootstrapManifestsConfigSpec, scr
 
 	type manifestDesc struct {
 		name     string
-		template []byte
+		template string
 	}
 
 	defaultManifests := []manifestDesc{
@@ -237,12 +235,6 @@ func (ctrl *ManifestController) render(cfg k8s.BootstrapManifestsConfigSpec, scr
 		)
 	}
 
-	if cfg.ServiceHostDNSAddress != "" {
-		defaultManifests = append(defaultManifests,
-			manifestDesc{"15-host-dns-service", talosHostDNSSvcTemplate},
-		)
-	}
-
 	manifests := make([]renderedManifest, len(defaultManifests))
 
 	for i := range defaultManifests {
@@ -252,7 +244,7 @@ func (ctrl *ManifestController) render(cfg k8s.BootstrapManifestsConfigSpec, scr
 				"join":     strings.Join,
 				"contains": strings.Contains,
 			}).
-			Parse(string(defaultManifests[i].template))
+			Parse(defaultManifests[i].template)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing manifest template %q: %w", defaultManifests[i].name, err)
 		}

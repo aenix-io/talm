@@ -54,7 +54,7 @@ func (ctrl *AddressFilterController) Outputs() []controller.Output {
 // Run implements controller.Controller interface.
 //
 //nolint:gocyclo
-func (ctrl *AddressFilterController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+func (ctrl *AddressFilterController) Run(ctx context.Context, r controller.Runtime, _ *zap.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,7 +97,7 @@ func (ctrl *AddressFilterController) Run(ctx context.Context, r controller.Runti
 			}
 
 			if err = safe.WriterModify(ctx, r, network.NewNodeAddressFilter(network.NamespaceName, k8s.NodeAddressFilterNoK8s), func(r *network.NodeAddressFilter) error {
-				r.TypedSpec().ExcludeSubnets = append(slices.Clone(podCIDRs), serviceCIDRs...)
+				r.TypedSpec().ExcludeSubnets = slices.Concat(podCIDRs, serviceCIDRs)
 
 				return nil
 			}); err != nil {
@@ -105,7 +105,7 @@ func (ctrl *AddressFilterController) Run(ctx context.Context, r controller.Runti
 			}
 
 			if err = safe.WriterModify(ctx, r, network.NewNodeAddressFilter(network.NamespaceName, k8s.NodeAddressFilterOnlyK8s), func(r *network.NodeAddressFilter) error {
-				r.TypedSpec().IncludeSubnets = append(slices.Clone(podCIDRs), serviceCIDRs...)
+				r.TypedSpec().IncludeSubnets = slices.Concat(podCIDRs, serviceCIDRs)
 
 				return nil
 			}); err != nil {

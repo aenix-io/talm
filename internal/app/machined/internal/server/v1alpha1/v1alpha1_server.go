@@ -23,21 +23,18 @@ import (
 	"syscall"
 	"time"
 
-	criconstants "github.com/containerd/containerd/pkg/cri/constants"
 	cosiv1alpha1 "github.com/cosi-project/runtime/api/v1alpha1"
 	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/protobuf/server"
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 	"github.com/gopacket/gopacket/afpacket"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/nberlee/go-netstat/netstat"
+	"github.com/pkg/xattr"
 	"github.com/prometheus/procfs"
 	"github.com/rs/xid"
 	"github.com/siderolabs/gen/xslices"
-	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
-	bddisk "github.com/siderolabs/go-blockdevice/blockdevice/util/disk"
 	"github.com/siderolabs/go-kmsg"
 	"github.com/siderolabs/go-pointer"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -51,9 +48,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	installer "github.com/siderolabs/talos/cmd/installer/pkg/install"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/bootloader"
+	"github.com/aenix-io/talm/internal/app/machined/pkg/runtime/v1alpha1/bootloader/options"
 	"github.com/aenix-io/talm/internal/app/machined/pkg/system"
 	"github.com/aenix-io/talm/internal/app/resources"
 	storaged "github.com/aenix-io/talm/internal/app/storaged"
@@ -63,8 +60,8 @@ import (
 	"github.com/aenix-io/talm/internal/pkg/containers/cri"
 	"github.com/aenix-io/talm/internal/pkg/etcd"
 	"github.com/aenix-io/talm/internal/pkg/install"
-	"github.com/aenix-io/talm/internal/pkg/meta"
 	"github.com/aenix-io/talm/internal/pkg/miniprocfs"
+	"github.com/aenix-io/talm/internal/pkg/partition"
 	"github.com/aenix-io/talm/internal/pkg/pcap"
 	"github.com/siderolabs/talos/pkg/archiver"
 	"github.com/siderolabs/talos/pkg/chunker"
@@ -77,12 +74,16 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 	timeapi "github.com/siderolabs/talos/pkg/machinery/api/time"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/configdiff"
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	machinetype "github.com/siderolabs/talos/pkg/machinery/config/machine"
-	"github.com/siderolabs/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"github.com/siderolabs/talos/pkg/machinery/meta"
 	"github.com/siderolabs/talos/pkg/machinery/nethelpers"
+	"github.com/siderolabs/talos/pkg/machinery/resources/block"
+	crires "github.com/siderolabs/talos/pkg/machinery/resources/cri"
 	etcdresource "github.com/siderolabs/talos/pkg/machinery/resources/etcd"
 	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 	timeresource "github.com/siderolabs/talos/pkg/machinery/resources/time"
@@ -179,15 +180,22 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	warnings, err := cfgProvider.Validate(
-		modeWrapper{
-			Mode:      s.Controller.Runtime().State().Platform().Mode(),
-			installed: s.Controller.Runtime().State().Machine().Installed(),
-		},
-	)
+	validationMode := modeWrapper{
+		Mode:      s.Controller.Runtime().State().Platform().Mode(),
+		installed: s.Controller.Runtime().State().Machine().Installed(),
+	}
+
+	warnings, err := cfgProvider.Validate(validationMode)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+
+	warningsRuntime, err := cfgProvider.RuntimeValidate(ctx, s.Controller.Runtime().State().V1Alpha2().Resources(), validationMode)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	warnings = slices.Concat(warnings, warningsRuntime)
 
 	//nolint:exhaustive
 	switch in.Mode {
@@ -197,7 +205,7 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 	// --mode=no-reboot
 	case machine.ApplyConfigurationRequest_NO_REBOOT:
 		if err = s.Controller.Runtime().CanApplyImmediate(cfgProvider); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
 		modeDetails = "Applied configuration without a reboot"
@@ -219,14 +227,9 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 	}
 
 	if in.DryRun {
-		var config interface{}
-		if s.Controller.Runtime().Config() != nil {
-			config = s.Controller.Runtime().ConfigContainer().RawV1Alpha1()
-		}
-
-		diff := cmp.Diff(config, cfgProvider.RawV1Alpha1(), cmp.AllowUnexported(v1alpha1.InstallDiskSizeMatcher{}))
-		if diff == "" {
-			diff = "No changes."
+		details, err := generateDiff(s.Controller.Runtime(), cfgProvider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate diff: %w", err)
 		}
 
 		return &machine.ApplyConfigurationResponse{
@@ -235,8 +238,7 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 					Mode: in.Mode,
 					ModeDetails: fmt.Sprintf(`Dry run summary:
 %s (skipped in dry-run).
-Config diff:
-%s`, modeDetails, diff),
+%s`, modeDetails, details),
 				},
 			},
 		}, nil
@@ -302,6 +304,19 @@ Config diff:
 	}, nil
 }
 
+func generateDiff(r runtime.Runtime, provider config.Provider) (string, error) {
+	documentsDiff, err := configdiff.DiffToString(r.ConfigContainer(), provider)
+	if err != nil {
+		return "", err
+	}
+
+	if documentsDiff == "" {
+		documentsDiff = "No changes."
+	}
+
+	return "Config diff:\n\n" + documentsDiff, nil
+}
+
 // GenerateConfiguration implements the machine.MachineServer interface.
 func (s *Server) GenerateConfiguration(ctx context.Context, in *machine.GenerateConfigurationRequest) (reply *machine.GenerateConfigurationResponse, err error) {
 	if s.Controller.Runtime().Config().Machine().Type() == machinetype.TypeWorker {
@@ -350,18 +365,22 @@ func (s *Server) Rollback(ctx context.Context, in *machine.RollbackRequest) (*ma
 		return nil, err
 	}
 
-	systemDisk := s.Controller.Runtime().State().Machine().Disk()
+	systemDisk, err := block.GetSystemDisk(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
+	if err != nil {
+		return nil, fmt.Errorf("system disk lookup failed: %w", err)
+	}
+
 	if systemDisk == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "system disk not found")
 	}
 
 	if err := func() error {
-		config, err := bootloader.Probe(ctx, systemDisk.Device().Name())
+		config, err := bootloader.Probe(systemDisk.DevPath, options.ProbeOptions{})
 		if err != nil {
 			return err
 		}
 
-		return config.Revert(ctx)
+		return config.Revert(systemDisk.DevPath)
 	}(); err != nil {
 		return nil, err
 	}
@@ -460,11 +479,11 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (*mach
 		return nil, err
 	}
 
-	log.Printf("upgrade request received: preserve %v, staged %v, force %v, reboot mode %v", in.GetPreserve(), in.GetStage(), in.GetForce(), in.GetRebootMode().String())
+	log.Printf("upgrade request received: staged %v, force %v, reboot mode %v", in.GetStage(), in.GetForce(), in.GetRebootMode().String())
 
 	log.Printf("validating %q", in.GetImage())
 
-	if err := install.PullAndValidateInstallerImage(ctx, s.Controller.Runtime().Config().Machine().Registries(), in.GetImage()); err != nil {
+	if err := install.PullAndValidateInstallerImage(ctx, crires.RegistryBuilder(s.Controller.Runtime().State().V1Alpha2().Resources()), in.GetImage()); err != nil {
 		return nil, fmt.Errorf("error validating installer image %q: %w", in.GetImage(), err)
 	}
 
@@ -483,7 +502,7 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (*mach
 		// unlock the mutex once the API call is done, as it protects only pre-upgrade checks
 		defer unlocker()
 
-		if err = etcdClient.ValidateForUpgrade(ctx, s.Controller.Runtime().Config(), in.GetPreserve()); err != nil {
+		if err = etcdClient.ValidateForUpgrade(ctx, s.Controller.Runtime().Config()); err != nil {
 			return nil, fmt.Errorf("error validating etcd for upgrade: %w", err)
 		}
 	}
@@ -546,7 +565,7 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (*mach
 type ResetOptions struct {
 	*machine.ResetRequest
 
-	systemDiskTargets []*installer.Target
+	systemDiskTargets []*partition.VolumeWipeTarget
 }
 
 // GetSystemDiskTargets implements runtime.ResetOptions interface.
@@ -555,7 +574,12 @@ func (opt *ResetOptions) GetSystemDiskTargets() []runtime.PartitionTarget {
 		return nil
 	}
 
-	return xslices.Map(opt.systemDiskTargets, func(t *installer.Target) runtime.PartitionTarget { return t })
+	return xslices.Map(opt.systemDiskTargets, func(t *partition.VolumeWipeTarget) runtime.PartitionTarget { return t })
+}
+
+// String implements runtime.ResetOptions interface.
+func (opt *ResetOptions) String() string {
+	return strings.Join(xslices.Map(opt.systemDiskTargets, func(t *partition.VolumeWipeTarget) string { return t.String() }), ", ")
 }
 
 // Reset resets the node.
@@ -575,18 +599,22 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 			return nil, errors.New("reset failed: invalid input, wipe mode SYSTEM_DISK doesn't support UserDisksToWipe parameter")
 		}
 
-		var diskList []*bddisk.Disk
-
-		diskList, err = bddisk.List()
+		diskList, err := safe.StateListAll[*block.Disk](ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("listing disks failed: %w", err)
 		}
 
-		disks := xslices.ToMap(diskList, func(disk *bddisk.Disk) (string, *bddisk.Disk) {
-			return disk.DeviceName, disk
-		})
+		disks := xslices.ToMap(
+			safe.ToSlice(diskList, func(d *block.Disk) *block.Disk { return d }),
+			func(disk *block.Disk) (string, *block.Disk) {
+				return disk.TypedSpec().DevPath, disk
+			},
+		)
 
-		systemDisk := s.Controller.Runtime().State().Machine().Disk()
+		systemDisk, err := block.GetSystemDisk(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
+		if err != nil {
+			return nil, fmt.Errorf("system disk lookup failed: %w", err)
+		}
 
 		// validate input
 		for _, deviceName := range in.GetUserDisksToWipe() {
@@ -595,11 +623,11 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 				return nil, fmt.Errorf("reset user disk failed: device %s wasn't found", deviceName)
 			}
 
-			if disk.ReadOnly {
+			if disk.TypedSpec().Readonly {
 				return nil, fmt.Errorf("reset user disk failed: device %s is readonly", deviceName)
 			}
 
-			if systemDisk != nil && deviceName == systemDisk.Device().Name() {
+			if systemDisk != nil && deviceName == systemDisk.DevPath {
 				return nil, fmt.Errorf("reset user disk failed: device %s is the system disk", deviceName)
 			}
 		}
@@ -610,25 +638,17 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 			return nil, errors.New("reset failed: invalid input, wipe mode USER_DISKS doesn't support SystemPartitionsToWipe parameter")
 		}
 
-		bd := s.Controller.Runtime().State().Machine().Disk().BlockDevice
-
-		var pt *gpt.GPT
-
-		pt, err = bd.PartitionTable()
-		if err != nil {
-			return nil, fmt.Errorf("error reading partition table: %w", err)
-		}
-
 		for _, spec := range in.GetSystemPartitionsToWipe() {
-			target, err := installer.ParseTarget(spec.Label, bd.Device().Name())
+			volumeStatus, err := safe.ReaderGetByID[*block.VolumeStatus](ctx, s.Controller.Runtime().State().V1Alpha2().Resources(), spec.Label)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to get volume status with label %q: %w", spec.Label, err)
 			}
 
-			_, err = target.Locate(pt)
-			if err != nil {
-				return nil, fmt.Errorf("failed location partition with label %q: %w", spec.Label, err)
+			if volumeStatus.TypedSpec().Phase != block.VolumePhaseReady {
+				return nil, fmt.Errorf("failed to reset: volume %q is not ready", spec.Label)
 			}
+
+			target := partition.VolumeWipeTargetFromVolumeStatus(volumeStatus)
 
 			if spec.Wipe {
 				opts.systemDiskTargets = append(opts.systemDiskTargets, target)
@@ -772,7 +792,7 @@ func (s *Server) Copy(req *machine.CopyRequest, obj machine.MachineService_CopyS
 
 // List implements the machine.MachineServer interface.
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (s *Server) List(req *machine.ListRequest, obj machine.MachineService_ListServer) error {
 	if req == nil {
 		req = new(machine.ListRequest)
@@ -825,11 +845,38 @@ func (s *Server) List(req *machine.ListRequest, obj machine.MachineService_ListS
 	}
 
 	for fi := range files {
+		xattrs := []*machine.Xattr{}
+
+		if req.ReportXattrs {
+			// On filesystems such as devtmpfs and sysfs, xattrs are not supported.
+			// However, we can still get the label from the security.selinux xattr for automatic labels.
+			foundSelinux := false
+
+			if list, err := xattr.List(fi.FullPath); err == nil {
+				for _, attr := range list {
+					if data, err := xattr.Get(fi.FullPath, attr); err == nil {
+						if attr == "security.selinux" {
+							foundSelinux = true
+						}
+
+						xattrs = append(xattrs, &machine.Xattr{Name: attr, Data: data})
+					}
+				}
+			}
+
+			if !foundSelinux {
+				if data, err := xattr.Get(fi.FullPath, "security.selinux"); err == nil {
+					xattrs = append(xattrs, &machine.Xattr{Name: "security.selinux", Data: data})
+				}
+			}
+		}
+
 		if fi.Error != nil {
 			err = obj.Send(&machine.FileInfo{
 				Name:         fi.FullPath,
 				RelativeName: fi.RelPath,
 				Error:        fi.Error.Error(),
+				Xattrs:       xattrs,
 			})
 		} else {
 			err = obj.Send(&machine.FileInfo{
@@ -842,6 +889,7 @@ func (s *Server) List(req *machine.ListRequest, obj machine.MachineService_ListS
 				Link:         fi.Link,
 				Uid:          fi.FileInfo.Sys().(*syscall.Stat_t).Uid,
 				Gid:          fi.FileInfo.Sys().(*syscall.Stat_t).Gid,
+				Xattrs:       xattrs,
 			})
 		}
 
@@ -967,10 +1015,7 @@ func (s *Server) DiskUsage(req *machine.DiskUsageRequest, obj machine.MachineSer
 			} else {
 				currentDepth := int32(strings.Count(fi.FullPath, archiver.OSPathSeparator)) - rootDepth
 
-				size := fi.FileInfo.Size()
-				if size < 0 {
-					size = 0
-				}
+				size := max(fi.FileInfo.Size(), 0)
 
 				// kcore file size gives wrong value, this code should be smarter when it reads it
 				// TODO: figure out better way to skip such file
@@ -1049,7 +1094,8 @@ func (s *Server) Mounts(ctx context.Context, in *emptypb.Empty) (reply *machine.
 		multiErr *multierror.Error
 	)
 
-	stats := []*machine.MountStat{}
+	var stats []*machine.MountStat
+
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
@@ -1257,7 +1303,7 @@ func k8slogs(ctx context.Context, req *machine.LogsRequest) (chunker.Chunker, io
 func getContainerInspector(ctx context.Context, namespace string, driver common.ContainerDriver) (containers.Inspector, error) {
 	switch driver {
 	case common.ContainerDriver_CRI:
-		if namespace != criconstants.K8sContainerdNamespace {
+		if namespace != constants.K8sContainerdNamespace {
 			return nil, errors.New("CRI inspector is supported only for K8s namespace")
 		}
 
@@ -1278,6 +1324,10 @@ func getContainerInspector(ctx context.Context, namespace string, driver common.
 func (s *Server) Read(in *machine.ReadRequest, srv machine.MachineService_ReadServer) (err error) {
 	stat, err := os.Stat(in.Path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return status.Error(codes.NotFound, err.Error())
+		}
+
 		return err
 	}
 
@@ -1403,13 +1453,15 @@ func (s *Server) Containers(ctx context.Context, in *machine.ContainersRequest) 
 		log.Println(err.Error())
 	}
 
-	containers := []*machine.ContainerInfo{}
+	var containers []*machine.ContainerInfo
 
 	for _, pod := range pods {
 		for _, container := range pod.Containers {
 			container := &machine.ContainerInfo{
 				Namespace:        in.Namespace,
 				Id:               container.Display,
+				InternalId:       container.ID,
+				Uid:              container.UID,
 				PodId:            pod.Name,
 				Name:             container.Name,
 				Image:            container.Image,
@@ -1451,7 +1503,7 @@ func (s *Server) Stats(ctx context.Context, in *machine.StatsRequest) (reply *ma
 		log.Println(err.Error())
 	}
 
-	stats := []*machine.Stat{}
+	var stats []*machine.Stat
 
 	for _, pod := range pods {
 		for _, container := range pod.Containers {
@@ -1745,7 +1797,7 @@ func (s *Server) EtcdRemoveMemberByID(ctx context.Context, in *machine.EtcdRemov
 
 	if err = client.RemoveMemberByMemberID(ctx, in.MemberId); err != nil {
 		if errors.Is(err, rpctypes.ErrMemberNotFound) {
-			return nil, status.Errorf(codes.NotFound, err.Error())
+			return nil, status.Error(codes.NotFound, err.Error())
 		}
 
 		return nil, fmt.Errorf("failed to remove member: %w", err)
@@ -2180,6 +2232,7 @@ func (s *Server) PacketCapture(in *machine.PacketCaptureRequest, srv machine.Mac
 	handle, err := afpacket.NewTPacket(
 		afpacket.OptInterface(in.Interface),
 		afpacket.OptPollTimeout(100*time.Millisecond),
+		afpacket.OptSocketType(unix.SOCK_RAW|unix.SOCK_CLOEXEC),
 	)
 	if err != nil {
 		return fmt.Errorf("error creating afpacket handle: %w", err)

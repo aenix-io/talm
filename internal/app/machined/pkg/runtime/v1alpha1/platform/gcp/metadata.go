@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	// https://cloud.google.com/compute/docs/metadata/overview
 	gcpResolverServer = "169.254.169.254"
 	gcpTimeServer     = "metadata.google.internal"
 )
@@ -41,40 +42,40 @@ type NetworkInterfaceConfig struct {
 	MTU         int      `json:"mtu,omitempty"`
 }
 
-func (g *GCP) getMetadata(context.Context) (*MetadataConfig, error) {
+func (g *GCP) getMetadata(ctx context.Context) (*MetadataConfig, error) {
 	var (
 		meta MetadataConfig
 		err  error
 	)
 
-	if meta.ProjectID, err = metadata.ProjectID(); err != nil {
+	if meta.ProjectID, err = metadata.ProjectIDWithContext(ctx); err != nil {
 		return nil, err
 	}
 
-	if meta.Name, err = metadata.InstanceName(); err != nil {
+	if meta.Name, err = metadata.InstanceNameWithContext(ctx); err != nil {
 		return nil, err
 	}
 
-	instanceType, err := metadata.Get("instance/machine-type")
+	instanceType, err := metadata.GetWithContext(ctx, "instance/machine-type")
 	if err != nil {
 		return nil, err
 	}
 
 	meta.InstanceType = strings.TrimSpace(instanceType[strings.LastIndex(instanceType, "/")+1:])
 
-	if meta.InstanceID, err = metadata.InstanceID(); err != nil {
+	if meta.InstanceID, err = metadata.InstanceIDWithContext(ctx); err != nil {
 		return nil, err
 	}
 
-	if meta.Hostname, err = metadata.Hostname(); err != nil {
+	if meta.Hostname, err = metadata.HostnameWithContext(ctx); err != nil {
 		return nil, err
 	}
 
-	if meta.Zone, err = metadata.Zone(); err != nil {
+	if meta.Zone, err = metadata.ZoneWithContext(ctx); err != nil {
 		return nil, err
 	}
 
-	meta.Preempted, err = metadata.Get("instance/scheduling/preemptible")
+	meta.Preempted, err = metadata.GetWithContext(ctx, "instance/scheduling/preemptible")
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +83,8 @@ func (g *GCP) getMetadata(context.Context) (*MetadataConfig, error) {
 	return &meta, nil
 }
 
-func (g *GCP) getNetworkMetadata(context.Context) ([]NetworkInterfaceConfig, error) {
-	metadataNetworkConfigDl, err := metadata.Get("instance/network-interfaces/?recursive=true&alt=json")
+func (g *GCP) getNetworkMetadata(ctx context.Context) ([]NetworkInterfaceConfig, error) {
+	metadataNetworkConfigDl, err := metadata.GetWithContext(ctx, "instance/network-interfaces/?recursive=true&alt=json")
 	if err != nil {
 		return nil, err
 	}

@@ -110,17 +110,25 @@ func compareNodes(orig, mod *yaml.Node) *yaml.Node {
 	return nil
 }
 
+func createDeleteNode() *yaml.Node {
+	return &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "$patch"},
+			{Kind: yaml.ScalarNode, Value: "delete"},
+		},
+	}
+}
+
 // compareMappingNodes compares two mapping nodes and returns differences,
 // prioritizing the order in the modified document but considering original document order where possible.
 func compareMappingNodes(orig, mod *yaml.Node) *yaml.Node {
 	diff := &yaml.Node{Kind: yaml.MappingNode}
 	origMap := nodeMap(orig)
 	modMap := nodeMap(mod)
-
-	// Set to track keys from orig that have been processed
 	processedKeys := make(map[string]bool)
 
-	// First pass: iterate over keys in the modified node to maintain order
+	// First pass: iterate over keys in the modified node
 	for i := 0; i < len(mod.Content); i += 2 {
 		key := mod.Content[i].Value
 		modVal := modMap[key]
@@ -128,23 +136,30 @@ func compareMappingNodes(orig, mod *yaml.Node) *yaml.Node {
 
 		if origExists {
 			processedKeys[key] = true
-			// Compare values for keys existing in both nodes
 			changedNode := compareNodes(origVal, modVal)
 			if changedNode != nil {
 				addNodeToDiff(diff, key, changedNode)
 			}
 		} else {
-			// New key in mod that doesn't exist in orig
 			addNodeToDiff(diff, key, modVal)
 		}
 	}
 
-	// Second pass: add keys from original that weren't in modified
+	// Second pass: add deletion directives for keys missing in the modified node
 	for i := 0; i < len(orig.Content); i += 2 {
 		key := orig.Content[i].Value
 		if !processedKeys[key] {
 			origVal := origMap[key]
-			addNodeToDiff(diff, key, origVal)
+			if origVal.Kind == yaml.MappingNode {
+				nestedDelete := &yaml.Node{Kind: yaml.MappingNode}
+				for j := 0; j < len(origVal.Content); j += 2 {
+					nestedKey := origVal.Content[j].Value
+					addNodeToDiff(nestedDelete, nestedKey, createDeleteNode())
+				}
+				addNodeToDiff(diff, key, nestedDelete)
+			} else {
+				addNodeToDiff(diff, key, createDeleteNode())
+			}
 		}
 	}
 

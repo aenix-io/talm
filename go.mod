@@ -45,7 +45,7 @@ require (
 	github.com/containerd/platforms v1.0.0-rc.0
 	github.com/containerd/typeurl/v2 v2.2.3
 	github.com/coredns/coredns v1.11.3
-	github.com/cosi-project/runtime v0.7.6
+	github.com/cosi-project/runtime v0.9.0
 	github.com/distribution/reference v0.6.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/ecks/uefi v0.0.0-20221116212947-caef65d070eb
@@ -105,7 +105,7 @@ require (
 	github.com/siderolabs/crypto v0.5.0
 	github.com/siderolabs/discovery-api v0.1.5
 	github.com/siderolabs/discovery-client v0.1.10
-	github.com/siderolabs/gen v0.7.0
+	github.com/siderolabs/gen v0.8.0
 	github.com/siderolabs/go-api-signature v0.3.6
 	github.com/siderolabs/go-blockdevice v0.4.8
 	github.com/siderolabs/go-blockdevice/v2 v2.0.9
@@ -151,8 +151,8 @@ require (
 	golang.org/x/text v0.21.0
 	golang.org/x/time v0.8.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
-	google.golang.org/grpc v1.68.1
-	google.golang.org/protobuf v1.35.2
+	google.golang.org/grpc v1.69.0
+	google.golang.org/protobuf v1.36.0
 	gopkg.in/yaml.v3 v3.0.1
 	helm.sh/helm/v3 v3.16.4
 	k8s.io/api v0.32.0
@@ -336,8 +336,8 @@ require (
 	golang.org/x/tools v0.27.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20241206012308-a4fef0638583 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241206012308-a4fef0638583 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20241216192217-9240e9c98484 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20241216192217-9240e9c98484 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

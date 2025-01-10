@@ -224,16 +224,9 @@ version: %s
 description: A library Talm chart for Talos Linux
 `,
 	"talm/templates/_helpers.tpl": `{{- define "talm.discovered.system_disk_name" }}
-{{- $disk := "" }}
-{{- range .Disks }}
-{{- if eq $disk "" }}
-{{- $disk = .device_name }}
+{{- with (lookup "systemdisk" "" "system-disk") }}
+{{ .spec.devPath }}
 {{- end }}
-{{- if .system_disk }}
-{{- $disk = .device_name }}
-{{- end }}
-{{- end }}
-{{- $disk }}
 {{- end }}
 
 {{- define "talm.discovered.machinetype" }}
@@ -248,26 +241,15 @@ description: A library Talm chart for Talos Linux
 
 {{- define "talm.discovered.disks_info" }}
 # -- Discovered disks:
-{{- range .Disks }}
-{{- if .wwid }}
-# {{ .device_name }}:
-#    model: {{ .model }}
-#    serial: {{ .serial }}
-#    wwid: {{ .wwid }}
-#    size: {{ include "talm.human_size" .size }}
+{{- range (lookup "disks" "" "").items }}
+{{- if .spec.wwid }}
+# {{ .spec.dev_path }}:
+#    model: {{ .spec.model }}
+#    serial: {{ .spec.serial }}
+#    wwid: {{ .spec.wwid }}
+#    size: {{ .spec.pretty_size }}
 {{- end }}
 {{- end }}
-{{- end }}
-
-{{- define "talm.human_size" }}
-  {{- $bytes := int64 . }}
-  {{- if lt $bytes 1048576 }}
-    {{- printf "%.2f MB" (divf $bytes 1048576.0) }}
-  {{- else if lt $bytes 1073741824 }}
-    {{- printf "%.2f GB" (divf $bytes 1073741824.0) }}
-  {{- else }}
-    {{- printf "%.2f TB" (divf $bytes 1099511627776.0) }}
-  {{- end }}
 {{- end }}
 
 {{- define "talm.discovered.default_addresses" }}

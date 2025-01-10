@@ -200,28 +200,6 @@ func Render(ctx context.Context, c *client.Client, opts Options) ([]byte, error)
 		if err := helpers.FailIfMultiNodes(ctx, "talm template"); err != nil {
 			return nil, err
 		}
-
-		response, err := c.Disks(ctx)
-		if err != nil {
-			if response == nil {
-				return nil, fmt.Errorf("error getting disks: %w", err)
-			}
-		}
-		for _, m := range response.Messages {
-			for _, d := range m.Disks {
-				dj, err := json.Marshal(d)
-				if err != nil {
-					return nil, err
-				}
-				var disk map[string]interface{}
-				err = json.Unmarshal(dj, &disk)
-				if err != nil {
-					return nil, err
-				}
-				helmEngine.Disks[d.DeviceName] = disk
-			}
-		}
-
 		helmEngine.LookupFunc = newLookupFunction(ctx, c)
 	}
 

@@ -229,9 +229,7 @@ version: %s
 description: A library Talm chart for Talos Linux
 `,
 	"talm/templates/_helpers.tpl": `{{- define "talm.discovered.system_disk_name" }}
-{{- with (lookup "systemdisk" "" "system-disk") }}
-{{ .spec.devPath }}
-{{- end }}
+{{- with (lookup "systemdisk" "" "system-disk") }}{{ .spec.devPath }}{{- end }}
 {{- end }}
 
 {{- define "talm.discovered.machinetype" }}

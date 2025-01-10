@@ -40,6 +40,7 @@ var Config struct {
 		WithSecrets       string   `yaml:"withSecrets"`
 		KubernetesVersion string   `yaml:"kubernetesVersion"`
 		Full              bool     `yaml:"full"`
+		Debug             bool     `yaml:"debug"`
 	} `yaml:"templateOptions"`
 	ApplyOptions struct {
 		DryRun           bool   `yaml:"preserve"`

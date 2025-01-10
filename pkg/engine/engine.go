@@ -19,6 +19,7 @@ import (
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/hashicorp/go-multierror"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/strvals"
 
@@ -32,7 +33,6 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
-	"helm.sh/helm/v3/pkg/chart"
 )
 
 // Options encapsulates all parameters necessary for rendering.
@@ -47,12 +47,51 @@ type Options struct {
 	TalosVersion      string
 	WithSecrets       string
 	Full              bool
+	Debug             bool
 	Root              string
 	Offline           bool
 	KubernetesVersion string
 	TemplateFiles     []string
 	ClusterName       string
 	Endpoint          string
+}
+
+// debugPhase is a unified debug function that prints debug information based on the given stage and context,
+// then exits the program.
+func debugPhase(opts Options, patches []string, clusterName string, clusterEndpoint string, mType machine.Type) {
+	phase := 2
+	if clusterName == "" {
+		clusterName = "dummy"
+		phase = 1
+	}
+	if clusterEndpoint == "" {
+		clusterEndpoint = "clusterEndpoint"
+		phase = 1
+	}
+
+	fmt.Printf(
+		"# DEBUG(phase %d): talosctl gen config %s %s -t %s --with-secrets=%s --talos-version=%s --kubernetes-version=%s -o -",
+		phase, clusterName, clusterEndpoint, mType,
+		opts.WithSecrets, opts.TalosVersion, opts.KubernetesVersion,
+	)
+
+	patchOption := "--config-patch-control-plane"
+	if mType == machine.TypeWorker {
+		patchOption = "--config-patch-worker"
+	}
+
+	// Print patches
+	for _, patch := range patches {
+		if string(patch[0]) == "@" {
+			// Apply patch is always one
+			fmt.Printf(" %s=%s\n", patchOption, patch)
+		} else {
+			fmt.Printf("\n---")
+			fmt.Printf("\n# DEBUG(phase %d): %s=\n%s", phase, patchOption, patch)
+		}
+	}
+
+	os.Exit(0)
 }
 
 // FullConfigProcess handles the full process of creating and updating the Bundle.
@@ -64,11 +103,17 @@ func FullConfigProcess(ctx context.Context, opts Options, patches []string) (*bu
 
 	loadedPatches, err := configpatcher.LoadPatches(patches)
 	if err != nil {
+		if opts.Debug {
+			debugPhase(opts, patches, "", "", machine.TypeUnknown)
+		}
 		return nil, err
 	}
 
-	err = configBundle.ApplyPatches(loadedPatches, true, true)
+	err = configBundle.ApplyPatches(loadedPatches, true, false)
 	if err != nil {
+		if opts.Debug {
+			debugPhase(opts, patches, "", "", machine.TypeUnknown)
+		}
 		return nil, fmt.Errorf("apply initial patches error: %w", err)
 	}
 
@@ -79,6 +124,10 @@ func FullConfigProcess(ctx context.Context, opts Options, patches []string) (*bu
 
 	if machineType == machine.TypeUnknown {
 		machineType = machine.TypeWorker
+	}
+
+	if opts.Debug {
+		debugPhase(opts, patches, clusterName, clusterEndpoint.String(), machineType)
 	}
 
 	// Reinitializing the configuration bundle with updated parameters
@@ -95,7 +144,7 @@ func FullConfigProcess(ctx context.Context, opts Options, patches []string) (*bu
 	}
 
 	// Applying updated patches
-	err = configBundle.ApplyPatches(loadedPatches, true, true)
+	err = configBundle.ApplyPatches(loadedPatches, (machineType == machine.TypeControlPlane), (machineType == machine.TypeWorker))
 	if err != nil {
 		return nil, fmt.Errorf("apply updated patches error: %w", err)
 	}
@@ -216,6 +265,7 @@ func Render(ctx context.Context, c *client.Client, opts Options) ([]byte, error)
 
 	finalConfig, err := applyPatchesAndRenderConfig(ctx, opts, configPatches, chrt)
 	if err != nil {
+		// TODO
 		return nil, err
 	}
 
@@ -344,11 +394,17 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 
 	patches, err := configpatcher.LoadPatches(configPatches)
 	if err != nil {
+		if opts.Debug {
+			debugPhase(opts, configPatches, "", "", machine.TypeUnknown)
+		}
 		return nil, err
 	}
 
-	err = configBundle.ApplyPatches(patches, true, true)
+	err = configBundle.ApplyPatches(patches, true, false)
 	if err != nil {
+		if opts.Debug {
+			debugPhase(opts, configPatches, "", "", machine.TypeUnknown)
+		}
 		return nil, err
 	}
 	machineType := configBundle.ControlPlaneCfg.Machine().Type()
@@ -356,6 +412,10 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 	clusterEndpoint := configBundle.ControlPlaneCfg.Cluster().Endpoint()
 	if machineType == machine.TypeUnknown {
 		machineType = machine.TypeWorker
+	}
+
+	if opts.Debug {
+		debugPhase(opts, configPatches, clusterName, clusterEndpoint.String(), machineType)
 	}
 
 	// Reload config with the correct machineType, clusterName and endpoint
@@ -404,7 +464,8 @@ func applyPatchesAndRenderConfig(ctx context.Context, opts Options, configPatche
 			return nil, err
 		}
 	}
-	err = configBundle.ApplyPatches(patches, true, true)
+
+	err = configBundle.ApplyPatches(patches, (machineType == machine.TypeControlPlane), (machineType == machine.TypeWorker))
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +539,6 @@ func extractResourceData(r resource.Resource) (map[string]interface{}, error) {
 				return res, fmt.Errorf("error unmarshaling yaml: %w", err)
 			}
 			res["spec"] = unmarshalledData
-			//res["stringSpec"] = yamlValue.(string)
 		} else {
 			return res, fmt.Errorf("field 'yaml' not found")
 		}
@@ -493,8 +553,6 @@ func newLookupFunction(ctx context.Context, c *client.Client) func(resource stri
 
 		var resources []map[string]interface{}
 
-		// get <type>
-		// get <type> <id>
 		callbackResource := func(parentCtx context.Context, hostname string, r resource.Resource, callError error) error {
 			if callError != nil {
 				multiErr = multierror.Append(multiErr, callError)
@@ -507,7 +565,6 @@ func newLookupFunction(ctx context.Context, c *client.Client) func(resource stri
 			}
 
 			resources = append(resources, res)
-
 			return nil
 		}
 		callbackRD := func(definition *meta.ResourceDefinition) error {

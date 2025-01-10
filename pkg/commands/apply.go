@@ -29,6 +29,7 @@ var applyCmdFlags struct {
 	configFiles       []string // -f/--files
 	talosVersion      string
 	withSecrets       string
+	debug             bool
 	kubernetesVersion string
 	dryRun            bool
 	preserve          bool
@@ -53,6 +54,9 @@ var applyCmd = &cobra.Command{
 		}
 		if !cmd.Flags().Changed("kubernetes-version") {
 			applyCmdFlags.kubernetesVersion = Config.TemplateOptions.KubernetesVersion
+		}
+		if !cmd.Flags().Changed("debug") {
+			applyCmdFlags.debug = Config.TemplateOptions.Debug
 		}
 		if !cmd.Flags().Changed("preserve") {
 			applyCmdFlags.preserve = Config.UpgradeOptions.Preserve
@@ -88,6 +92,7 @@ func apply(args []string) func(ctx context.Context, c *client.Client) error {
 				TalosVersion:      applyCmdFlags.talosVersion,
 				WithSecrets:       applyCmdFlags.withSecrets,
 				KubernetesVersion: applyCmdFlags.kubernetesVersion,
+				Debug:             applyCmdFlags.debug,
 			}
 
 			patches := []string{"@" + configFile}
@@ -188,8 +193,8 @@ func init() {
 	applyCmd.Flags().StringSliceVarP(&applyCmdFlags.configFiles, "file", "f", nil, "specify config files or patches in a YAML file (can specify multiple)")
 	applyCmd.Flags().StringVar(&applyCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
 	applyCmd.Flags().StringVar(&applyCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
-
 	applyCmd.Flags().StringVar(&applyCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
+	applyCmd.Flags().BoolVarP(&applyCmdFlags.debug, "debug", "", false, "show only rendered patches")
 	applyCmd.Flags().BoolVar(&applyCmdFlags.dryRun, "dry-run", false, "check how the config change will be applied in dry-run mode")
 	applyCmd.Flags().DurationVar(&applyCmdFlags.configTryTimeout, "timeout", constants.ConfigTryTimeout, "the config will be rolled back after specified timeout (if try mode is selected)")
 	applyCmd.Flags().StringSliceVar(&applyCmdFlags.certFingerprints, "cert-fingerprint", nil, "list of server certificate fingeprints to accept (defaults to no check)")

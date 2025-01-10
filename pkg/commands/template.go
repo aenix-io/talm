@@ -32,6 +32,7 @@ var templateCmdFlags struct {
 	talosVersion      string
 	withSecrets       string
 	full              bool
+	debug             bool
 	offline           bool
 	kubernetesVersion string
 	inplace           bool
@@ -63,6 +64,9 @@ var templateCmd = &cobra.Command{
 		}
 		if !cmd.Flags().Changed("full") {
 			templateCmdFlags.full = Config.TemplateOptions.Full
+		}
+		if !cmd.Flags().Changed("debug") {
+			templateCmdFlags.debug = Config.TemplateOptions.Debug
 		}
 		if !cmd.Flags().Changed("offline") {
 			templateCmdFlags.offline = Config.TemplateOptions.Offline
@@ -199,6 +203,7 @@ func generateOutput(ctx context.Context, c *client.Client, args []string) (strin
 		TalosVersion:      templateCmdFlags.talosVersion,
 		WithSecrets:       templateCmdFlags.withSecrets,
 		Full:              templateCmdFlags.full,
+		Debug:             templateCmdFlags.debug,
 		Root:              Config.RootDir,
 		Offline:           templateCmdFlags.offline,
 		KubernetesVersion: templateCmdFlags.kubernetesVersion,
@@ -234,6 +239,7 @@ func init() {
 	templateCmd.Flags().StringVar(&templateCmdFlags.talosVersion, "talos-version", "", "the desired Talos version to generate config for (backwards compatibility, e.g. v0.8)")
 	templateCmd.Flags().StringVar(&templateCmdFlags.withSecrets, "with-secrets", "", "use a secrets file generated using 'gen secrets'")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.full, "full", "", false, "show full resulting config, not only patch")
+	templateCmd.Flags().BoolVarP(&templateCmdFlags.debug, "debug", "", false, "show only rendered patches")
 	templateCmd.Flags().BoolVarP(&templateCmdFlags.offline, "offline", "", false, "disable gathering information and lookup functions")
 	templateCmd.Flags().StringVar(&templateCmdFlags.kubernetesVersion, "kubernetes-version", constants.DefaultKubernetesVersion, "desired kubernetes version to run")
 

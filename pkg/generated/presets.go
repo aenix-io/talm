@@ -30,6 +30,11 @@ upgradeOptions:
 `,
 	"cozystack/templates/_helpers.tpl": `{{- define "talos.config" }}
 machine:
+  {{- if eq .MachineType "controlplane" }}
+  nodeLabels:
+    node.kubernetes.io/exclude-from-external-load-balancers:
+      $patch: delete
+  {{- end }}
   type: {{ .MachineType }}
   kubelet:
     nodeIP:

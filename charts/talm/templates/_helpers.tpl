@@ -7,8 +7,11 @@
 {{- end }}
 
 {{- define "talm.discovered.hostname" }}
-{{- with (lookup "hostname" "" "hostname") }}
-{{- .spec.hostname }}
+{{- $hostname := lookup "hostname" "" "hostname" }}
+{{- if $hostname }}
+{{- $hostname.spec.hostname }}
+{{- else }}
+{{- printf "talos-%s" (include "talm.discovered.default_addresses_by_gateway" . | sha256sum | trunc 5) }}
 {{- end }}
 {{- end }}
 
